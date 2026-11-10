@@ -102,11 +102,17 @@ function pickTargetPhysicalModel(
 		if (codeCandidates.length > 0) return codeCandidates[0];
 	}
 
-	// 4. Lightweight / high-speed general track (e.g. gemma-4-12b)
+	// 4. Lightweight / high-speed general track (prefer Qwen if tools are needed, or Gemma for pure text)
 	if (track === "general") {
 		if (lmStudioModels.length > 0) {
-			const localGemma = lmStudioModels.find((m) => m.id.includes("gemma-4-12b"));
-			if (localGemma) return localGemma;
+			const preferredLocal = [
+				lmStudioModels.find((m) => m.id === "qwen-3.8-27b-intermediate@iq3_xxs"),
+				lmStudioModels.find((m) => m.id === "qwen3.8-27b-splash"),
+				lmStudioModels.find((m) => m.id === "qwen-3.8-27b-smoll"),
+				lmStudioModels.find((m) => m.id.includes("gemma-4-12b")),
+			].filter((m): m is Model<Api> => Boolean(m))[0];
+
+			if (preferredLocal) return preferredLocal;
 		}
 
 		const fastCandidates = [
@@ -186,6 +192,11 @@ export function createSystem2AutoModel(runtime: ModelRuntime): VirtualModelDefin
 				request.thinkingLevel,
 			);
 
+			// Surface System 1 telemetry to terminal
+			console.error(
+				`\x1b[36m[System 1]\x1b[0m Track: \x1b[1m${decision.selected_track}\x1b[0m (${Math.round(decision.confidence * 100)}% conf, ${decision.method}) → \x1b[32m${targetModel.provider}/${targetModel.id}\x1b[0m (thinking: ${targetThinking})`,
+			);
+
 			const newState: System2State = {
 				track: decision.selected_track,
 				confidence: decision.confidence,
@@ -237,6 +248,10 @@ export function createSystem2DeliberativeModel(runtime: ModelRuntime): VirtualMo
 				request.thinkingLevel !== "off" ? request.thinkingLevel : "high",
 			);
 
+			console.error(
+				`\x1b[35m[System 2 Deliberator]\x1b[0m Deep Reasoning Track: \x1b[1m${decision.selected_track}\x1b[0m → \x1b[32m${targetModel.provider}/${targetModel.id}\x1b[0m (thinking: ${targetThinking})`,
+			);
+
 			return {
 				model: targetModel,
 				thinkingLevel: targetThinking,
@@ -277,6 +292,10 @@ export function createSystem2LocalModel(runtime: ModelRuntime): VirtualModelDefi
 				decision.selected_track,
 				decision.confidence,
 				request.thinkingLevel,
+			);
+
+			console.error(
+				`\x1b[36m[System 1]\x1b[0m Track: \x1b[1m${decision.selected_track}\x1b[0m (${Math.round(decision.confidence * 100)}% conf, ${decision.method}) → \x1b[32m${targetModel.provider}/${targetModel.id}\x1b[0m (thinking: ${targetThinking})`,
 			);
 
 			return {

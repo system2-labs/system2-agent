@@ -28,11 +28,13 @@ export async function verifyToolCall(
 		});
 
 		if (!audit.valid) {
+			console.error(`\x1b[31m[System 2 Guard]\x1b[0m Blocked ${toolName} call: ${audit.error}`);
 			return {
 				allowed: false,
 				reason: audit.error || "Command blocked by System 2 Safety Gatekeeper.",
 			};
 		}
+		console.error(`\x1b[35m[System 2 Guard]\x1b[0m Verified ${toolName} execution: \x1b[32mPASSED\x1b[0m`);
 	}
 
 	// 2. Code write verification
