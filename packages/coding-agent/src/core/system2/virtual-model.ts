@@ -192,9 +192,9 @@ export function createSystem2AutoModel(runtime: ModelRuntime): VirtualModelDefin
 				request.thinkingLevel,
 			);
 
-			// Surface System 1 telemetry to terminal
+			// Surface System 1 telemetry to terminal (System2 Brand Colors: Steel Blue #3d8baa, Coral Red #ef4223, Emerald #3e8363)
 			console.error(
-				`\x1b[36m[System 1]\x1b[0m Track: \x1b[1m${decision.selected_track}\x1b[0m (${Math.round(decision.confidence * 100)}% conf, ${decision.method}) → \x1b[32m${targetModel.provider}/${targetModel.id}\x1b[0m (thinking: ${targetThinking})`,
+				`\x1b[38;2;61;139;170m[System 1]\x1b[0m Track: \x1b[1m${decision.selected_track}\x1b[0m (${Math.round(decision.confidence * 100)}% conf, ${decision.method}) → \x1b[38;2;239;66;35m${targetModel.provider}/${targetModel.id}\x1b[0m (thinking: ${targetThinking})`,
 			);
 
 			const newState: System2State = {
@@ -295,7 +295,7 @@ export function createSystem2LocalModel(runtime: ModelRuntime): VirtualModelDefi
 			);
 
 			console.error(
-				`\x1b[36m[System 1]\x1b[0m Track: \x1b[1m${decision.selected_track}\x1b[0m (${Math.round(decision.confidence * 100)}% conf, ${decision.method}) → \x1b[32m${targetModel.provider}/${targetModel.id}\x1b[0m (thinking: ${targetThinking})`,
+				`\x1b[38;2;61;139;170m[System 1]\x1b[0m Track: \x1b[1m${decision.selected_track}\x1b[0m (${Math.round(decision.confidence * 100)}% conf, ${decision.method}) → \x1b[38;2;239;66;35m${targetModel.provider}/${targetModel.id}\x1b[0m (thinking: ${targetThinking})`,
 			);
 
 			return {
