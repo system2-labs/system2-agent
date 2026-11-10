@@ -2,7 +2,12 @@ import { fauxProvider, InMemoryModelsStore } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { createSystem2AutoModel, createSystem2DeliberativeModel, System2Client } from "../src/core/system2/index.ts";
+import {
+	createSystem2AutoModel,
+	createSystem2DeliberativeModel,
+	createSystem2LocalModel,
+	System2Client,
+} from "../src/core/system2/index.ts";
 
 describe("System 2 Cognitive Virtual Models", () => {
 	it("lexical gate correctly classifies coding and logic prompts", async () => {
@@ -83,5 +88,39 @@ describe("System 2 Cognitive Virtual Models", () => {
 		expect(route.state).toBeDefined();
 		const state = route.state as any;
 		expect(state.track).toBe("code");
+	});
+
+	it("routes to local LM Studio models and enforces Regime 2 thinking 'off' for quantized models", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsStore: new InMemoryModelsStore(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+
+		// Simulate LM Studio models
+		const lmstudio = fauxProvider({
+			provider: "lmstudio",
+			models: [
+				{ id: "qwen-3.8-27b-smoll", contextWindow: 262_144, maxTokens: 8192, input: ["text"] },
+				{ id: "google/gemma-4-12b", contextWindow: 131_072, maxTokens: 8192, input: ["text"] },
+			],
+		});
+		runtime.registerNativeProvider(lmstudio.provider);
+		runtime.registerVirtualModel(createSystem2LocalModel(runtime));
+		await runtime.refresh({ allowNetwork: false });
+
+		const localModel = runtime.getModel("system2", "local")!;
+		expect(localModel).toBeDefined();
+
+		// Code prompt should route to qwen-3.8-27b-smoll with thinking turned OFF (Regime 2)
+		const route = await runtime.resolveModel(
+			localModel,
+			[{ role: "user", content: "def lru_cache(): pass", timestamp: Date.now() }],
+			{ reason: "user", thinkingLevel: "high" }, // requested high, but Regime 2 clamps to "off"
+		);
+
+		expect(route.model.id).toContain("qwen");
+		expect(route.thinkingLevel).toBe("off");
 	});
 });

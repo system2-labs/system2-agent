@@ -14,7 +14,7 @@ import {
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
-import { createSystem2AutoModel, createSystem2DeliberativeModel } from "./system2/index.ts";
+import { createSystem2AutoModel, createSystem2DeliberativeModel, createSystem2LocalModel } from "./system2/index.ts";
 
 /**
  * Non-fatal issues collected while creating services or sessions.
@@ -197,6 +197,7 @@ export async function createAgentSessionServices(
 	try {
 		modelRuntime.registerVirtualModel(createSystem2AutoModel(modelRuntime));
 		modelRuntime.registerVirtualModel(createSystem2DeliberativeModel(modelRuntime));
+		modelRuntime.registerVirtualModel(createSystem2LocalModel(modelRuntime));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		diagnostics.push({

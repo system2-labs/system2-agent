@@ -6,7 +6,7 @@ const DEFAULT_BRIDGE_URL = process.env.SYSTEM2_BRIDGE_URL || "http://127.0.0.1:8
 const LEXICAL_PATTERNS: Record<System2Track, RegExp[]> = {
 	code: [
 		/```(?:python|rust|cpp|c|csharp|java|sql|bash|sh|go|typescript|javascript)\b/i,
-		/\b(?:def\s+[a-zA-Z_]\w*\(|fn\s+[a-zA-Z_]\w*\(|function\s+[a-zA-Z_]\w*\(|public\s+static\s+void)\b/,
+		/\b(?:def\s+[a-zA-Z_]\w*\s*\(|fn\s+[a-zA-Z_]\w*\s*\(|function\s+[a-zA-Z_]\w*\s*\(|public\s+static\s+void\b)/,
 		/\b(?:SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+.+\s+SET|DELETE\s+FROM)\b/i,
 		/\b(?:console\.log|println!|printf\(|std::cout|npm|pnpm|cargo|git\s+commit|git\s+push)\b/,
 		/\b(?:refactor|bug\s+fix|stack\s+trace|type\s+error|syntax\s+error)\b/i,
