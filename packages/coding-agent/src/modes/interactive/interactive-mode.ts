@@ -7173,7 +7173,7 @@ export class InteractiveMode {
 - **Ocular** (\`qwen3-vl-4b-instruct\`): Visual reasoning, diagrams, and layout validation
 
 **Sovereign Invariants & Verification**
-- **Zero-Pollution TUI**: Standard clean interface identical to Pi; deliberation telemetry runs quietly in background state.
+- **3-Line Deliberation TUI**: Dedicated state line for real-time tool personas (\`Arbiter\`, \`Philosopher\`, \`Wanderer\`), active profiles, and Sys1/Sys2 arbitration telemetry without line-wrapping.
 - **Fail-Closed Sentinel**: Intercepts dangerous operations and verifies AST/syntax invariants.
 - **Atomic Rollback**: Automatic sub-second worktree reversion if a test assertion or compile breaks.
 

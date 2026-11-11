@@ -12,6 +12,7 @@ import {
 	getModelNickname,
 } from "../src/core/system2/index.ts";
 import { FooterComponent } from "../src/modes/interactive/components/footer.ts";
+import { piLogoLines, piWordmark } from "../src/modes/interactive/components/pi-logo.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -171,7 +172,7 @@ describe("System 2 CLI Insights, Prompt Collision Fix & Update Decoupling", () =
 			expect(idleSys1).toBe("\x1b[38;2;239;66;35m[Sys1: Auto]\x1b[0m • off");
 		});
 
-		it("footer component renders clean original Pi footer layout", () => {
+		it("footer component renders clean 3-line layout with System 2 telemetry", () => {
 			const mockSession = {
 				sessionManager: {
 					getCwd: () => "/workspace/test",
@@ -181,10 +182,17 @@ describe("System 2 CLI Insights, Prompt Collision Fix & Update Decoupling", () =
 					getLeafId: () => null,
 					getEntries: () => [],
 				},
-				state: { model: { id: "auto", provider: "system2", reasoning: true }, thinkingLevel: "low" },
+				state: {
+					model: { id: "auto", provider: "system2", reasoning: true },
+					thinkingLevel: "low",
+					track: "code",
+					confidence: 0.85,
+					tookMs: 120,
+				},
 				routedModel: { model: { id: "qwen3.5-9b", provider: "system2" }, thinkingLevel: "low" },
 				modelRuntime: { isUsingSubscription: () => false },
 				getContextUsage: () => undefined,
+				getActiveTool: () => ({ toolName: "bash", summary: "git status", persona: "Arbiter // Sandbox" }),
 			};
 			const mockFooterData = {
 				getGitBranch: () => "main",
@@ -192,8 +200,70 @@ describe("System 2 CLI Insights, Prompt Collision Fix & Update Decoupling", () =
 				getExtensionStatuses: () => new Map(),
 			};
 			const footer = new FooterComponent(mockSession as any, mockFooterData as any);
-			const rendered = footer.render(120)[1];
-			expect(rendered).toContain("auto • low → qwen3.5-9b • low");
+			const lines = footer.render(120);
+			expect(lines).toHaveLength(3);
+			expect(lines[1]).toContain("auto • low → qwen3.5-9b • low");
+			expect(lines[2]).toContain("⚡ [Arbiter // Sandbox: git status]");
+			expect(lines[2]).toContain(
+				"\x1b[38;2;239;66;35m[Sys1: code // 85% conf, took 0.1s]\x1b[0m → \x1b[1mArtisan\x1b[0m (qwen3.5-9b) • low",
+			);
+		});
+
+		it("footer lines strictly respect terminal width across narrow and wide screens", () => {
+			const mockSession = {
+				sessionManager: {
+					getCwd: () => "/workspace/test/very/long/nested/path/to/project",
+					getSessionName: () => "feature-heavy-deliberation",
+					getEntryCount: () => 5,
+					getSessionId: () => "s2",
+					getLeafId: () => null,
+					getEntries: () => [],
+				},
+				state: {
+					model: { id: "deliberative", provider: "system2", reasoning: true },
+					thinkingLevel: "high",
+					track: "code",
+					confidence: 0.94,
+					tookMs: 450,
+					deliberation: { status: "pass", summary: "Arbitrated consensus on Path 2" },
+				},
+				routedModel: {
+					model: { id: "qwen-3.8-27b-intermediate@iq3_xxs", provider: "system2" },
+					thinkingLevel: "high",
+				},
+				modelRuntime: { isUsingSubscription: () => false },
+				getContextUsage: () => undefined,
+				getActiveTool: () => ({
+					toolName: "bash",
+					summary: "pytest test/very/long/nested/test_suite.py --verbose",
+					persona: "Arbiter // Sandbox",
+				}),
+			};
+			const mockFooterData = {
+				getGitBranch: () => "feature/nested-feature-branch",
+				getAvailableProviderCount: () => 2,
+				getExtensionStatuses: () => new Map(),
+			};
+			const footer = new FooterComponent(mockSession as any, mockFooterData as any);
+
+			for (const width of [60, 80, 100, 120, 160]) {
+				const rendered = footer.render(width);
+				expect(rendered).toHaveLength(3);
+				for (const line of rendered) {
+					// Ensure no line visible width exceeds terminal width
+					const { visibleWidth } = require("@earendil-works/pi-tui");
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+				}
+			}
+		});
+
+		it("renders the Mondrian S2 logo and System2 wordmark", () => {
+			const [top, bottom] = piLogoLines();
+			expect(top).toContain(" S ");
+			expect(top).toContain(" 2 ");
+			expect(bottom).toContain("───");
+			expect(piWordmark()).toContain("System");
+			expect(piWordmark()).toContain("2");
 		});
 	});
 

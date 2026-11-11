@@ -31,7 +31,7 @@ function styledReadLineRange(args: ReadRenderArgs | undefined, theme: Theme): st
 }
 function formatReadCall(args: ReadRenderArgs | undefined, theme: Theme, cwd: string): string {
 	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
-	return `${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}${styledReadLineRange(args, theme)}`;
+	return `\x1b[38;2;61;139;170m[Wanderer // Search]\x1b[0m ${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}${styledReadLineRange(args, theme)}`;
 }
 function trimTrailingEmptyLines(lines: string[]): string[] {
 	let end = lines.length;

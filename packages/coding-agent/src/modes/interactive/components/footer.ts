@@ -4,7 +4,9 @@ import type { AgentSession } from "../../../core/agent-session.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { formatSystem2FooterModel, getActiveProfile } from "../../../core/system2/index.ts";
 import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
+import { getVirtualModelState } from "../../../core/virtual-models.ts";
 import { theme } from "../theme/theme.ts";
 
 /**
@@ -285,6 +287,60 @@ export class FooterComponent implements Component {
 
 		const pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
 		const lines = [pwdLine, dimStatsLeft + dimRemainder];
+
+		// Line 3: System 2 Cognitive Deliberation & Active State Changes
+		const isSystem2 = state.model?.provider === "system2" || routed?.model.provider === "system2";
+		if (isSystem2) {
+			const branch =
+				typeof this.session?.sessionManager?.getBranch === "function"
+					? this.session.sessionManager.getBranch()
+					: typeof (this.session?.sessionManager as any)?.getEntries === "function"
+						? (this.session.sessionManager as any).getEntries()
+						: [];
+			const vState = state.model
+				? (getVirtualModelState(branch, state.model.provider, state.model.id) as any)
+				: undefined;
+			const combinedState = { ...state, ...(vState ? { state: vState } : {}) };
+
+			// Left side: Active Tool with subagent persona or active profile
+			const activeTool = (this.session as any).getActiveTool?.();
+			let line3Left: string;
+			if (activeTool) {
+				const persona = activeTool.persona || activeTool.toolName;
+				const summaryStr = activeTool.summary ? `: ${activeTool.summary}` : "";
+				line3Left = `\x1b[38;2;255;183;3m⚡ [${persona}${summaryStr}]\x1b[0m`;
+			} else {
+				const profileName =
+					(combinedState as any)?.profile || (combinedState as any)?.state?.profile || getActiveProfile().id;
+				line3Left = `\x1b[38;2;62;131;99m[Profile: ${profileName}]\x1b[0m`;
+			}
+
+			// Right side: Sys1/Sys2 Deliberation Telemetry
+			const line3Right = formatSystem2FooterModel(routed, combinedState);
+
+			const left3Width = visibleWidth(line3Left);
+			const right3Width = visibleWidth(line3Right);
+			const totalNeeded3 = left3Width + minPadding + right3Width;
+
+			let line3: string;
+			if (totalNeeded3 <= width) {
+				const padding3 = " ".repeat(width - left3Width - right3Width);
+				line3 = `${line3Left}${padding3}${line3Right}`;
+			} else {
+				// Allocate space to keep line3Right intact if possible, truncate left
+				const availableForLeft = width - right3Width - minPadding;
+				if (availableForLeft > 12) {
+					const truncLeft = truncateToWidth(line3Left, availableForLeft, "...");
+					const padding3 = " ".repeat(Math.max(1, width - visibleWidth(truncLeft) - right3Width));
+					line3 = `${truncLeft}${padding3}${line3Right}`;
+				} else {
+					line3 = truncateToWidth(line3Right, width, "...");
+				}
+			}
+
+			// Hard clip to terminal width to guarantee zero terminal wrapping
+			lines.push(truncateToWidth(line3, width, ""));
+		}
 
 		// Add extension statuses on a single line, sorted by key alphabetically
 		const extensionStatuses = this.footerData.getExtensionStatuses();

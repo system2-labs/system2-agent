@@ -22,7 +22,11 @@ function formatShellCall(args: { command?: string; timeout?: number } | undefine
 	const timeout = args?.timeout as number | undefined;
 	const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
 	const commandDisplay = command === null ? invalidArgText(theme) : command ? command : theme.fg("toolOutput", "...");
-	return theme.fg("toolTitle", theme.bold(`${prompt} ${commandDisplay}`)) + timeoutSuffix;
+	return (
+		`\x1b[38;2;62;131;99m[Arbiter // Sandbox]\x1b[0m ` +
+		theme.fg("toolTitle", theme.bold(`${prompt} ${commandDisplay}`)) +
+		timeoutSuffix
+	);
 }
 function rebuildBashResultRenderComponent(
 	component: Container,

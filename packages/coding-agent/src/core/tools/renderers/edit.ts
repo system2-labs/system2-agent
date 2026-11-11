@@ -82,7 +82,7 @@ function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path
 }
 function formatEditCall(args: RenderableEditArgs | undefined, theme: Theme, cwd: string): string {
 	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
-	return `${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}`;
+	return `\x1b[38;2;239;66;35m[Philosopher // Refactor]\x1b[0m ${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}`;
 }
 function formatEditResult(
 	args: RenderableEditArgs | undefined,
