@@ -1432,7 +1432,7 @@ export class AgentSession {
 					throw new Error(`[System 2 Guard] Blocked execution: ${check.reason}`);
 				}
 				if (!this._activeSystem2Snapshot && ["write", "edit", "write_file", "bash"].includes(event.toolName)) {
-					this._activeSystem2Snapshot = await captureSnapshot(this.sessionManager.cwd);
+					this._activeSystem2Snapshot = await captureSnapshot(this.sessionManager.getCwd());
 				}
 				if (event.args && typeof event.args === "object") {
 					this._activeToolArgs.set(event.toolCallId, event.args as Record<string, any>);
