@@ -67,6 +67,13 @@ export const BUILTIN_PROFILES: Record<string, ModelProfile> = {
 
 let activeProfileId = "fast-coding";
 
+export const PROFILE_ALIASES: Record<string, string> = {
+	"coding-swe": "fast-coding",
+	"reasoning-heavy": "big-brain-hybrid",
+	"sentinel-strict": "fast-coding",
+	"edge-minimal": "lean-battery",
+};
+
 export function getAvailableProfiles(): ModelProfile[] {
 	return Object.values(BUILTIN_PROFILES);
 }
@@ -76,6 +83,7 @@ export function getActiveProfile(): ModelProfile {
 }
 
 export function setActiveProfile(id: string): ModelProfile {
-	activeProfileId = id in BUILTIN_PROFILES ? id : "fast-coding";
+	const normalized = PROFILE_ALIASES[id.toLowerCase()] || id.toLowerCase();
+	activeProfileId = normalized in BUILTIN_PROFILES ? normalized : "fast-coding";
 	return getActiveProfile();
 }

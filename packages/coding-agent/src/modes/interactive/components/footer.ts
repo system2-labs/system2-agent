@@ -6,6 +6,7 @@ import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { formatSystem2FooterModel } from "../../../core/system2/index.ts";
 import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
+import { getVirtualModelState } from "../../../core/virtual-models.ts";
 import { theme } from "../theme/theme.ts";
 
 /**
@@ -249,7 +250,17 @@ export class FooterComponent implements Component {
 		let rightSide = rightSideWithoutProvider;
 		const isSystem2 = state.model?.provider === "system2" || routed?.model.provider === "system2";
 		if (isSystem2) {
-			rightSide = formatSystem2FooterModel(routed, state);
+			const branch =
+				typeof this.session?.sessionManager?.getBranch === "function"
+					? this.session.sessionManager.getBranch()
+					: typeof (this.session?.sessionManager as any)?.getEntries === "function"
+						? (this.session.sessionManager as any).getEntries()
+						: [];
+			const vState = state.model
+				? (getVirtualModelState(branch, state.model.provider, state.model.id) as any)
+				: undefined;
+			const combinedState = { ...state, ...(vState ? { state: vState } : {}) };
+			rightSide = formatSystem2FooterModel(routed, combinedState);
 		} else if (this.footerData.getAvailableProviderCount() > 1 && state.model) {
 			rightSide = `(${state.model!.provider}) ${rightSideWithoutProvider}`;
 			if (statsLeftWidth + minPadding + visibleWidth(rightSide) > width) {

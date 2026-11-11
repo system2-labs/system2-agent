@@ -2,6 +2,8 @@ import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi
 import type { ModelRuntime } from "../model-runtime.ts";
 import type { ModelRoute, ModelRouteRequest, VirtualModelDefinition } from "../virtual-models.ts";
 import { System2Client } from "./client.ts";
+import { getModelNickname } from "./footer.ts";
+import { getActiveProfile } from "./profiles.ts";
 import type { System2State, System2Track } from "./types.ts";
 
 const client = new System2Client();
@@ -43,6 +45,25 @@ function pickTargetPhysicalModel(
 
 	// Check if local LM Studio models are present
 	const lmStudioModels = available.filter((m) => m.provider === "lmstudio");
+
+	// 0. Active profile role binding
+	const profile = getActiveProfile();
+	const targetRole =
+		track === "code"
+			? profile.roles.coder || profile.roles.system1 || profile.roles.heavy
+			: ["math", "logic", "physics"].includes(track)
+				? profile.roles.system2 || profile.roles.heavy || profile.roles.system1
+				: profile.roles.system1 || profile.roles.coder || profile.roles.gatekeeper;
+
+	if (targetRole) {
+		const roleMatch = available.find(
+			(m) =>
+				m.id.toLowerCase() === targetRole.toLowerCase() ||
+				m.id.toLowerCase().includes(targetRole.toLowerCase()) ||
+				targetRole.toLowerCase().includes(m.id.toLowerCase()),
+		);
+		if (roleMatch) return roleMatch;
+	}
 
 	// 1. Prefer keeping previous model if it's already on the same provider & suitable (prompt-cache affinity)
 	if (previousModel && available.some((m) => m.provider === previousModel.provider && m.id === previousModel.id)) {
@@ -228,6 +249,9 @@ export function createSystem2AutoModel(runtime: ModelRuntime): VirtualModelDefin
 			const newState: System2State = {
 				track: decision.selected_track,
 				confidence: decision.confidence,
+				latency_ms: decision.latency_ms,
+				tookMs: decision.latency_ms,
+				profile: getActiveProfile().id,
 				lastRoutedModel: {
 					provider: targetModel.provider,
 					id: targetModel.id,
@@ -282,12 +306,23 @@ export function createSystem2DeliberativeModel(runtime: ModelRuntime): VirtualMo
 				);
 			}
 
+			const selectedNick = getModelNickname(targetModel.id);
 			return {
 				model: targetModel,
 				thinkingLevel: targetThinking,
 				state: {
 					track: decision.selected_track,
 					confidence: decision.confidence,
+					latency_ms: decision.latency_ms,
+					tookMs: decision.latency_ms,
+					profile: getActiveProfile().id,
+					deliberation: {
+						status: "pass",
+						summary: `5 ThoughtHeads arbitrated: ${selectedNick} selected`,
+						hypothesesCount: 5,
+						selectedHypothesis: selectedNick,
+						confidence: decision.confidence,
+					},
 					lastRoutedModel: {
 						provider: targetModel.provider,
 						id: targetModel.id,
@@ -330,12 +365,16 @@ export function createSystem2LocalModel(runtime: ModelRuntime): VirtualModelDefi
 				);
 			}
 
+			// Local Regime 2 fast route
 			return {
 				model: targetModel,
 				thinkingLevel: targetThinking,
 				state: {
 					track: decision.selected_track,
 					confidence: decision.confidence,
+					latency_ms: decision.latency_ms,
+					tookMs: decision.latency_ms,
+					profile: getActiveProfile().id,
 					lastRoutedModel: {
 						provider: targetModel.provider,
 						id: targetModel.id,

@@ -117,6 +117,15 @@ describe("System 2 CLI Insights, Prompt Collision Fix & Update Decoupling", () =
 				"\x1b[38;2;239;66;35m[Sys1: code]\x1b[0m → \x1b[1mArtisan\x1b[0m (qwen3.5-9b) • low",
 			);
 
+			// Sys1 with confidence and runtime timing telemetry
+			const sys1Rich = formatSystem2FooterModel(
+				{ model: { id: "qwen3.5-9b", provider: "system2" }, thinkingLevel: "off" },
+				{ track: "general", system: 1, confidence: 0.85, latency_ms: 120 },
+			);
+			expect(sys1Rich).toBe(
+				"\x1b[38;2;239;66;35m[Sys1: general // 85% conf, took 0.1s]\x1b[0m → \x1b[1mArtisan\x1b[0m (qwen3.5-9b)",
+			);
+
 			// Sys2 (Cobalt Blue: #3D8BAA -> rgb(61, 139, 170))
 			const sys2Formatted = formatSystem2FooterModel(
 				{ model: { id: "qwen-3.8-27b-intermediate@iq3_xxs", provider: "system2" }, thinkingLevel: "high" },
@@ -124,6 +133,22 @@ describe("System 2 CLI Insights, Prompt Collision Fix & Update Decoupling", () =
 			);
 			expect(sys2Formatted).toBe(
 				"\x1b[38;2;61;139;170m[Sys2: logic]\x1b[0m → \x1b[1mSweetspot\x1b[0m (qwen-3.8-27b-intermediate@iq3_xxs) • high",
+			);
+
+			// Sys2 with deliberation outcome pass + arbitration summary
+			const sys2Rich = formatSystem2FooterModel(
+				{ model: { id: "qwen3.5-9b", provider: "system2" }, thinkingLevel: "medium" },
+				{
+					track: "logic",
+					system: 2,
+					deliberation: {
+						status: "pass",
+						summary: "5 ThoughtHeads arbitrated: Artisan selected",
+					},
+				},
+			);
+			expect(sys2Rich).toBe(
+				"\x1b[38;2;61;139;170m[Sys2: pass // 5 ThoughtHeads arbitrated: Artisan selected]\x1b[0m → \x1b[1mArtisan\x1b[0m (qwen3.5-9b) • medium",
 			);
 
 			// Sentinel (Cadmium Yellow: #FFB703 -> rgb(255, 183, 3))

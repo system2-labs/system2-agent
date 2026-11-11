@@ -54,6 +54,27 @@ export function formatSystem2FooterModel(
 			rawTrack.toLowerCase() === "sys2" ||
 			(!routed && !rawModelId));
 
+	// Format System 1 track and confidence/timing details
+	const sys1Track = rawTrack === "general" && !routed ? "Auto" : rawTrack;
+	let sys1Details = "";
+	if (s?.confidence !== undefined) {
+		const confPct = `${Math.round(s.confidence * 100)}% conf`;
+		const tookMs = s?.tookMs ?? s?.latency_ms;
+		const tookStr = tookMs !== undefined ? `, took ${(tookMs / 1000).toFixed(1)}s` : "";
+		sys1Details = ` // ${confPct}${tookStr}`;
+	} else if (s?.tookMs !== undefined || s?.latency_ms !== undefined) {
+		const tookMs = s?.tookMs ?? s?.latency_ms;
+		sys1Details = ` // took ${(tookMs / 1000).toFixed(1)}s`;
+	}
+
+	// Format System 2 deliberation details
+	let sys2Label = isDeliberative && !routed ? "Deliberative" : rawTrack;
+	if (s?.deliberation) {
+		const status = s.deliberation.status || "pass";
+		const summary = s.deliberation.summary ? ` // ${s.deliberation.summary}` : "";
+		sys2Label = `${status}${summary}`;
+	}
+
 	// Mondrian cognitive indicators:
 	// Cadmium Yellow (#FFB703) for Sentinel
 	// Cobalt Blue (#3D8BAA) for System 2 Deliberative
@@ -61,8 +82,8 @@ export function formatSystem2FooterModel(
 	const indicator = isSentinel
 		? "\x1b[38;2;255;183;3m[Sentinel]\x1b[0m"
 		: isSys2
-			? `\x1b[38;2;61;139;170m[Sys2: ${isDeliberative && !routed ? "Deliberative" : rawTrack}]\x1b[0m`
-			: `\x1b[38;2;239;66;35m[Sys1: ${rawTrack === "general" && !routed ? "Auto" : rawTrack}]\x1b[0m`;
+			? `\x1b[38;2;61;139;170m[Sys2: ${sys2Label}]\x1b[0m`
+			: `\x1b[38;2;239;66;35m[Sys1: ${sys1Track}${sys1Details}]\x1b[0m`;
 
 	if (!routed) {
 		const level = state?.thinkingLevel || (isSys2 ? "medium" : "off");

@@ -37,6 +37,13 @@ describe("system2 model profiles and sentinel tools", () => {
 		expect(bigBrain.roles.remote).toBe("qwen3.8-flash-next");
 		expect(bigBrain.recommendedVramGb).toBe(128);
 
+		// Hot-swap using user alias
+		const aliasProfile = setActiveProfile("coding-swe");
+		expect(aliasProfile.id).toBe("fast-coding");
+
+		const edgeAlias = setActiveProfile("edge-minimal");
+		expect(edgeAlias.id).toBe("lean-battery");
+
 		// Fallback test: invalid profile id defaults to fast-coding
 		const fallback = setActiveProfile("unknown-profile-id");
 		expect(fallback.id).toBe("fast-coding");
