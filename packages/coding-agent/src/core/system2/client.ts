@@ -7,6 +7,7 @@ import type {
 } from "./types.ts";
 
 const DEFAULT_BRIDGE_URL = process.env.SYSTEM2_BRIDGE_URL || "http://127.0.0.1:8765";
+const FALLBACK_BRIDGE_URL = "http://127.0.0.1:8000";
 
 // Stage 1 In-Process Lexical Scanner (Fallback if Daemon is offline)
 const LEXICAL_PATTERNS: Record<System2Track, RegExp[]> = {
@@ -15,7 +16,10 @@ const LEXICAL_PATTERNS: Record<System2Track, RegExp[]> = {
 		/\b(?:def\s+[a-zA-Z_]\w*\s*\(|fn\s+[a-zA-Z_]\w*\s*\(|function\s+[a-zA-Z_]\w*\s*\(|public\s+static\s+void\b)/,
 		/\b(?:SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+.+\s+SET|DELETE\s+FROM)\b/i,
 		/\b(?:console\.log|println!|printf\(|std::cout|npm|pnpm|cargo|git\s+commit|git\s+push)\b/,
-		/\b(?:refactor|bug\s+fix|stack\s+trace|type\s+error|syntax\s+error)\b/i,
+		/\b(?:refactor|bug\s+fix|stack\s+trace|type\s+error|syntax\s+error|attributeerror|traceback)\b/i,
+		/\b(?:repo|inspect\s+(?:the\s+)?repo|codebase|script|csv|json|test\b|pytest|unit\s*test|mock)\b/i,
+		/\b(?:implement|compile|transpile|debug|lint|format\s+code|benchmark|api|endpoint|database|sqlite)\b/i,
+		/\b(?:file|files|function|class|method|module|import|package|dependency|server|fastapi|flask)\b/i,
 	],
 	math: [
 		/\b(?:integrate|derivative|polynomial|eigenvalue|eigenvector|matrix\s+multiplication|calculus)\b/i,
@@ -81,27 +85,32 @@ export class System2Client {
 		const start = performance.now();
 
 		// Attempt fast HTTP call to local daemon (< 2 ms)
-		try {
-			const res = await fetch(`${this.bridgeUrl}/v1/route`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ prompt }),
-				signal: signal || AbortSignal.timeout(100), // 100 ms max timeout
-			});
+		const candidateUrls = [this.bridgeUrl];
+		if (this.bridgeUrl !== FALLBACK_BRIDGE_URL) candidateUrls.push(FALLBACK_BRIDGE_URL);
 
-			if (res.ok) {
-				const data = (await res.json()) as any;
-				return {
-					selected_track: data.track,
-					confidence: data.confidence ?? 0.85,
-					method: data.method ?? "centroid",
-					latency_ms: performance.now() - start,
-					recommended_model: data.recommended_model,
-					recommended_thinking: data.recommended_thinking,
-				};
+		for (const url of candidateUrls) {
+			try {
+				const res = await fetch(`${url}/v1/route`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ prompt }),
+					signal: signal || AbortSignal.timeout(60), // 60 ms max timeout
+				});
+
+				if (res.ok) {
+					const data = (await res.json()) as any;
+					return {
+						selected_track: data.track,
+						confidence: data.confidence ?? 0.85,
+						method: data.method ?? "centroid",
+						latency_ms: performance.now() - start,
+						recommended_model: data.recommended_model,
+						recommended_thinking: data.recommended_thinking,
+					};
+				}
+			} catch {
+				// Try next candidate or fall back
 			}
-		} catch {
-			// Daemon offline or timed out; fall back to fast in-process lexical gate
 		}
 
 		// Fallback: In-process Stage 1 Lexical Gate (< 0.1 ms)

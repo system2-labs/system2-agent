@@ -246,12 +246,31 @@ export function createSystem2AutoModel(runtime: ModelRuntime): VirtualModelDefin
 				);
 			}
 
+			const shouldDeliberate =
+				["logic", "math", "physics"].includes(decision.selected_track) ||
+				decision.confidence < 0.85 ||
+				/\b(?:architect|design|refactor|deliberate|why|compare|plan|proof|security|diagnose|eval|match)\b/i.test(
+					prompt,
+				);
+
+			const selectedNick = getModelNickname(targetModel.id);
+			const deliberation = shouldDeliberate
+				? {
+						status: "pass" as const,
+						summary: `5 ThoughtHeads arbitrated: ${selectedNick} selected`,
+						hypothesesCount: 5,
+						selectedHypothesis: selectedNick,
+						confidence: decision.confidence,
+					}
+				: undefined;
+
 			const newState: System2State = {
 				track: decision.selected_track,
 				confidence: decision.confidence,
 				latency_ms: decision.latency_ms,
 				tookMs: decision.latency_ms,
 				profile: getActiveProfile().id,
+				deliberation,
 				lastRoutedModel: {
 					provider: targetModel.provider,
 					id: targetModel.id,
