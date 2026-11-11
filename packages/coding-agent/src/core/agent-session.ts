@@ -459,11 +459,6 @@ export class AgentSession {
 	private _activeSystem2Snapshot: WorktreeSnapshot | null = null;
 	private _lastKnownGoodSnapshot: WorktreeSnapshot | null = null;
 	private readonly _activeToolArgs = new Map<string, Record<string, any>>();
-	private _activeToolInfo: { toolName: string; summary?: string } | null = null;
-
-	public getActiveTool(): { toolName: string; summary?: string } | null {
-		return this._activeToolInfo;
-	}
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -1431,15 +1426,6 @@ export class AgentSession {
 				this._replaceMessageInPlace(event.message, normalized);
 			}
 		} else if (event.type === "tool_execution_start") {
-			let summary: string | undefined;
-			if (event.args && typeof event.args === "object") {
-				const a = event.args as Record<string, any>;
-				if (typeof a.command === "string") summary = a.command.trim().slice(0, 32);
-				else if (typeof a.path === "string") summary = a.path.split("/").pop();
-				else if (typeof a.query === "string") summary = a.query.trim().slice(0, 32);
-			}
-			this._activeToolInfo = { toolName: event.toolName, summary };
-
 			if (this.model?.provider === "system2") {
 				const check = await verifyToolCall(event.toolName, event.args as Record<string, any>);
 				if (!check.allowed) {
@@ -1469,7 +1455,6 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_end") {
-			this._activeToolInfo = null;
 			if (this.model?.provider === "system2") {
 				const args = this._activeToolArgs.get(event.toolCallId);
 				this._activeToolArgs.delete(event.toolCallId);
@@ -1488,15 +1473,8 @@ export class AgentSession {
 						: (res?.content ?? "");
 					if (output.includes("failed") || output.includes("FAILED") || output.includes("AssertionError")) {
 						if (this._activeSystem2Snapshot) {
-							const rb = await rollbackSnapshot(this._activeSystem2Snapshot);
+							await rollbackSnapshot(this._activeSystem2Snapshot);
 							this._activeSystem2Snapshot = null;
-							console.error(
-								`\x1b[38;2;239;66;35m[System 2 Rollback]\x1b[0m Atomic rollback executed in ${rb.latencyMs}ms. Working tree restored to pre-regression snapshot.`,
-							);
-						} else {
-							console.error(
-								"\x1b[38;2;239;66;35m[System 2 Catch: Regression]\x1b[0m Intercepted test assertion failure -> triggering Arbiter self-healing protocol.",
-							);
 						}
 					} else if (
 						output.includes("passed in") ||
@@ -1506,9 +1484,6 @@ export class AgentSession {
 					) {
 						this._lastKnownGoodSnapshot = this._activeSystem2Snapshot;
 						this._activeSystem2Snapshot = null;
-						console.error(
-							"\x1b[38;2;62;131;99m[System 2 Invariant: Pass]\x1b[0m Verified green bar across test suite.",
-						);
 					}
 				}
 			}

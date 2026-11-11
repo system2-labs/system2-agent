@@ -171,7 +171,7 @@ describe("System 2 CLI Insights, Prompt Collision Fix & Update Decoupling", () =
 			expect(idleSys1).toBe("\x1b[38;2;239;66;35m[Sys1: Auto]\x1b[0m • off");
 		});
 
-		it("footer component integrates System 2 Mondrian formatting and dynamic tools", () => {
+		it("footer component renders clean original Pi footer layout", () => {
 			const mockSession = {
 				sessionManager: {
 					getCwd: () => "/workspace/test",
@@ -181,11 +181,10 @@ describe("System 2 CLI Insights, Prompt Collision Fix & Update Decoupling", () =
 					getLeafId: () => null,
 					getEntries: () => [],
 				},
-				state: { model: { id: "auto", provider: "system2" }, thinkingLevel: "low", track: "code" },
+				state: { model: { id: "auto", provider: "system2", reasoning: true }, thinkingLevel: "low" },
 				routedModel: { model: { id: "qwen3.5-9b", provider: "system2" }, thinkingLevel: "low" },
 				modelRuntime: { isUsingSubscription: () => false },
 				getContextUsage: () => undefined,
-				getActiveTool: () => ({ toolName: "bash", summary: "git status" }),
 			};
 			const mockFooterData = {
 				getGitBranch: () => "main",
@@ -194,10 +193,7 @@ describe("System 2 CLI Insights, Prompt Collision Fix & Update Decoupling", () =
 			};
 			const footer = new FooterComponent(mockSession as any, mockFooterData as any);
 			const rendered = footer.render(120)[1];
-			expect(rendered).toContain("\x1b[38;2;255;183;3m⚡ [bash: git status]\x1b[0m");
-			expect(rendered).toContain(
-				"\x1b[38;2;239;66;35m[Sys1: code]\x1b[0m → \x1b[1mArtisan\x1b[0m (qwen3.5-9b) • low",
-			);
+			expect(rendered).toContain("auto • low → qwen3.5-9b • low");
 		});
 	});
 
