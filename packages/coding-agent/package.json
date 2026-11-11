@@ -28,7 +28,8 @@
 		"examples",
 		"schemas",
 		"containerization.md",
-		"CHANGELOG.md"
+		"CHANGELOG.md",
+		"skills"
 	],
 	"scripts": {
 		"clean": "node ../../scripts/package-files.mjs clean dist",

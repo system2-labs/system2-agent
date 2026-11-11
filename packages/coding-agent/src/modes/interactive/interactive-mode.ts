@@ -3335,6 +3335,12 @@ export class InteractiveMode {
 			if (!text) return;
 
 			// Handle commands
+			if (text === "/help" || text.startsWith("/help ")) {
+				const topic = text.startsWith("/help ") ? text.slice(6).trim() : undefined;
+				this.editor.setText("");
+				this.handleHelpCommand(topic);
+				return;
+			}
 			if (text === "/settings") {
 				this.showSettingsSelector();
 				this.editor.setText("");
@@ -7119,6 +7125,65 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Markdown(hotkeys.trim(), 1, 1, this.getMarkdownThemeWithSettings()));
 		this.chatContainer.addChild(new DynamicBorder());
+		this.ui.requestRender();
+	}
+
+	private handleHelpCommand(_topic?: string): void {
+		const cycleThinking = this.getEditorKeyDisplay("app.thinking.cycle");
+		const cycleModel = this.getEditorKeyDisplay("app.model.cycleForward");
+		const expandTools = this.getEditorKeyDisplay("app.tools.expand");
+		const interrupt = this.getEditorKeyDisplay("app.interrupt");
+		const clear = this.getEditorKeyDisplay("app.clear");
+
+		const helpText = `
+# System 2 Sovereign Dual-Process Engine
+
+**Cognitive Deliberation Architecture**
+- **System 1 (Reflexive / Fast)**: \`system2/local\` or \`system2/auto\`. Rapid sub-second execution on edge weights (Artisan / qwen3.5-9b) with internal thinking disabled.
+- **System 2 (Deliberative / Deep)**: \`system2/deliberative\`. 5 parallel dense ThoughtHeads evaluating candidate paths simultaneously with Scale-Invariant Logit Arbitration.
+- **Two-Stage Sentinel Guard**: Intercepts commands pre-execution and verifies AST/file invariants post-execution, auto-reverting corruptions in <85ms.
+
+**Interactive Controls & Shortcuts**
+| Shortcut | Action | Description |
+| :--- | :--- | :--- |
+| \`${cycleModel}\` (\`Ctrl+P\`) | **Cycle Models** | Switch between \`deliberative\`, \`auto\`, \`local\`, and local models |
+| \`/model <name>\` | **Model Selector** | Switch directly (e.g. \`/model deliberative\` or \`/model auto\`) |
+| \`${cycleThinking}\` (\`Shift+Tab\`) | **Thinking Depth** | Cycle thinking: \`off\` · \`low\` · \`medium\` · \`high\` · \`max\` |
+| \`${expandTools}\` (\`Ctrl+O\`) | **Expand Output** | Toggle expansion of truncated tool results or startup help |
+| \`${interrupt}\` (\`Esc\`) | **Interrupt** | Immediately halt running model inference or tool execution |
+| \`${clear}\` (\`Ctrl+C\`) | **Clear / Exit** | Clear prompt input (press twice to exit) |
+| \`/\` | **Slash Commands** | Open commands list (\`/help\`, \`/model\`, \`/compact\`, \`/tree\`, \`/export\`) |
+| \`! <cmd>\` | **Run Bash** | Run shell command directly in session (e.g. \`! git status\`) |
+
+**Cognitive Model Specializations**
+- **Artisan** (\`qwen3.5-9b\`): Primary code generation, tool dispatch, and refactoring
+- **Sweetspot** (\`qwen-3.8-27b@iq3_xxs\`): Heavy polyglot coding and architectural trace analysis
+- **Heretic** (\`deepseek-v4-pro-qwen3.5-9b\`): Adversarial edge-case discovery and stress-testing
+- **Gatekeeper** (\`gemma-4-e2b-it-qat\`): Fast AST verification, structural correctness, and triage
+- **Sentinel** (\`lfm2.5-1.2b-instruct\`): Fail-closed security validation and rollback verification
+- **Nightwatch** (\`lfm3-2b-omni-abliter8\`): Invariant auditing, raw diff analysis, and security sanity
+- **Ocular** (\`qwen3-vl-4b-instruct\`): Visual reasoning, diagrams, and layout validation
+
+**Mondrian Telemetry Badges**
+- \`[Sys2: Deliberative]\` (Cobalt Blue): Deep deliberation active
+- \`[Sys1: fast]\` (Cadmium Red): Fast reflexive track active
+- \`[Sentinel]\` / \`⚡ [tool]\` (Cadmium Yellow): Policy sentinel or live tool executing
+
+**Software Factory & Concurrency**
+LM Studio serves 4 concurrent slots (\`n_parallel=4\`), allowing the Builder (\`Artisan\`) and the Adversarial Triad (\`Gatekeeper\`, \`Heretic\`, \`Sentinel\`) to evaluate code in parallel.
+
+**Native Self-Update Engine**
+Run \`system2 update\` to fast-forward pull the latest code and rebuild the production bundle.
+`;
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
+		this.chatContainer.addChild(
+			new ThemedText(() => theme.bold(theme.fg("accent", "System 2 Cognitive Guide")), 1, 0),
+		);
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Markdown(helpText.trim(), 1, 1, this.getMarkdownThemeWithSettings()));
+		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
 		this.ui.requestRender();
 	}
 

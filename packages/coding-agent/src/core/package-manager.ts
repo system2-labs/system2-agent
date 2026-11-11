@@ -38,7 +38,7 @@ import type { Readable } from "node:stream";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { gt, maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
-import { CONFIG_DIR_NAME } from "../config.ts";
+import { CONFIG_DIR_NAME, getPackageDir } from "../config.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import {
@@ -2781,6 +2781,24 @@ export class DefaultPackageManager implements PackageManager {
 			userOverrides.themes,
 			globalBaseDir,
 		);
+
+		// Built-in harness skills from packages/coding-agent/skills
+		const packageSkillsDir = join(getPackageDir(), "skills");
+		if (existsSync(packageSkillsDir)) {
+			const packageSkillMetadata: PathMetadata = {
+				source: "builtin",
+				scope: "user",
+				origin: "top-level",
+				baseDir: packageSkillsDir,
+			};
+			addResources(
+				"skills",
+				collectAutoSkillEntries(packageSkillsDir, "pi"),
+				packageSkillMetadata,
+				userOverrides.skills,
+				globalBaseDir,
+			);
+		}
 	}
 
 	private collectFilesFromPaths(paths: string[], resourceType: ResourceType): string[] {
