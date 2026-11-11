@@ -7172,10 +7172,10 @@ export class InteractiveMode {
 - **Nightwatch** (\`lfm3-2b-omni-abliter8\`): Invariant auditing, raw diff analysis, and security sanity
 - **Ocular** (\`qwen3-vl-4b-instruct\`): Visual reasoning, diagrams, and layout validation
 
-**Mondrian Telemetry Badges**
-- \`[Sys2: Deliberative]\` (Cobalt Blue): Deep deliberation active
-- \`[Sys1: fast]\` (Cadmium Red): Fast reflexive track active
-- \`[Sentinel]\` / \`⚡ [tool]\` (Cadmium Yellow): Policy sentinel or live tool executing
+**Sovereign Invariants & Verification**
+- **Zero-Pollution TUI**: Standard clean interface identical to Pi; deliberation telemetry runs quietly in background state.
+- **Fail-Closed Sentinel**: Intercepts dangerous operations and verifies AST/syntax invariants.
+- **Atomic Rollback**: Automatic sub-second worktree reversion if a test assertion or compile breaks.
 
 **Software Factory & Concurrency**
 LM Studio serves 4 concurrent slots (\`n_parallel=4\`), allowing the Builder (\`Artisan\`) and the Adversarial Triad (\`Gatekeeper\`, \`Heretic\`, \`Sentinel\`) to evaluate code in parallel.
