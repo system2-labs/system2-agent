@@ -147,7 +147,13 @@ import {
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
-import { verifyToolCall } from "./system2/index.ts";
+import {
+	captureSnapshot,
+	rollbackSnapshot,
+	verifyPostExecution,
+	verifyToolCall,
+	type WorktreeSnapshot,
+} from "./system2/index.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
@@ -450,6 +456,9 @@ export class AgentSession {
 	 * retry is routed with it as `failed`, since the context no longer contains it.
 	 */
 	private _failedResponse: AssistantMessage | undefined;
+	private _activeSystem2Snapshot: WorktreeSnapshot | null = null;
+	private _lastKnownGoodSnapshot: WorktreeSnapshot | null = null;
+	private readonly _activeToolArgs = new Map<string, Record<string, any>>();
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -1264,7 +1273,7 @@ export class AgentSession {
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
-		if (this._agentRunAbortRequested) return false;
+		if (this._agentRunAbortRequested || this.model?.provider === "system2") return false;
 		const settings = this.settingsManager.getRetrySettings();
 		if (!settings.enabled || this._retryAttempt >= settings.maxRetries) {
 			return false;
@@ -1422,6 +1431,12 @@ export class AgentSession {
 				if (!check.allowed) {
 					throw new Error(`[System 2 Guard] Blocked execution: ${check.reason}`);
 				}
+				if (!this._activeSystem2Snapshot && ["write", "edit", "write_file", "bash"].includes(event.toolName)) {
+					this._activeSystem2Snapshot = await captureSnapshot(this.sessionManager.cwd);
+				}
+				if (event.args && typeof event.args === "object") {
+					this._activeToolArgs.set(event.toolCallId, event.args as Record<string, any>);
+				}
 			}
 			const extensionEvent: ToolExecutionStartEvent = {
 				type: "tool_execution_start",
@@ -1440,18 +1455,46 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_end") {
-			if (this.model?.provider === "system2" && event.toolName === "bash") {
-				const output = Array.isArray((event.result as any)?.content)
-					? (event.result as any).content.map((c: any) => c.text || "").join("\n")
-					: "";
-				if (output.includes("failed") || output.includes("FAILED") || output.includes("AssertionError")) {
-					console.error(
-						"\x1b[38;2;239;66;35m[System 2 Catch: Regression]\x1b[0m Intercepted test assertion failure -> triggering Arbiter self-healing protocol.",
-					);
-				} else if (output.includes("passed in") || output.includes("passed,")) {
-					console.error(
-						"\x1b[38;2;62;131;99m[System 2 Invariant: Pass]\x1b[0m Verified green bar across test suite.",
-					);
+			if (this.model?.provider === "system2") {
+				const args = this._activeToolArgs.get(event.toolCallId);
+				this._activeToolArgs.delete(event.toolCallId);
+				if (["write", "edit", "write_file"].includes(event.toolName)) {
+					const postCheck = await verifyPostExecution(event.toolName, args);
+					if (!postCheck.allowed) {
+						if (this._activeSystem2Snapshot) await rollbackSnapshot(this._activeSystem2Snapshot);
+						this._activeSystem2Snapshot = null;
+						throw new Error(`[System 2 Guard] Post-execution verification failed: ${postCheck.reason}`);
+					}
+				}
+				if (event.toolName === "bash") {
+					const res = event.result as any;
+					const output = Array.isArray(res?.content)
+						? res.content.map((c: any) => c.text || "").join("\n")
+						: (res?.content ?? "");
+					if (output.includes("failed") || output.includes("FAILED") || output.includes("AssertionError")) {
+						if (this._activeSystem2Snapshot) {
+							const rb = await rollbackSnapshot(this._activeSystem2Snapshot);
+							this._activeSystem2Snapshot = null;
+							console.error(
+								`\x1b[38;2;239;66;35m[System 2 Rollback]\x1b[0m Atomic rollback executed in ${rb.latencyMs}ms. Working tree restored to pre-regression snapshot.`,
+							);
+						} else {
+							console.error(
+								"\x1b[38;2;239;66;35m[System 2 Catch: Regression]\x1b[0m Intercepted test assertion failure -> triggering Arbiter self-healing protocol.",
+							);
+						}
+					} else if (
+						output.includes("passed in") ||
+						output.includes("passed,") ||
+						output.includes("Tests  passed") ||
+						output.includes("✓")
+					) {
+						this._lastKnownGoodSnapshot = this._activeSystem2Snapshot;
+						this._activeSystem2Snapshot = null;
+						console.error(
+							"\x1b[38;2;62;131;99m[System 2 Invariant: Pass]\x1b[0m Verified green bar across test suite.",
+						);
+					}
 				}
 			}
 			const extensionEvent: ToolExecutionEndEvent = {
@@ -1579,6 +1622,13 @@ export class AgentSession {
 	/** Current retry attempt (0 if not retrying) */
 	get retryAttempt(): number {
 		return this._retryAttempt;
+	}
+
+	get activeSystem2Snapshot(): WorktreeSnapshot | null {
+		return this._activeSystem2Snapshot;
+	}
+	get lastKnownGoodSnapshot(): WorktreeSnapshot | null {
+		return this._lastKnownGoodSnapshot;
 	}
 
 	/**
@@ -3943,6 +3993,7 @@ export class AgentSession {
 	 * @returns true if the caller should continue the agent, false otherwise
 	 */
 	private async _prepareRetry(message: AssistantMessage): Promise<boolean> {
+		if (this.model?.provider === "system2") return false;
 		const settings = this.settingsManager.getRetrySettings();
 		if (!settings.enabled) {
 			return false;
