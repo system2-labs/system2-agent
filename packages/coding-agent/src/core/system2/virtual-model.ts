@@ -147,11 +147,14 @@ function resolveThinkingLevel(
 	const isQuantizedLocal =
 		targetModel.provider === "lmstudio" ||
 		modelId.includes("smoll") ||
-		modelId.includes("iq3_xxs") ||
+		modelId.includes("iq2") ||
+		modelId.includes("iq3") ||
 		modelId.includes("q2_k") ||
+		modelId.includes("ud-") ||
+		modelId.includes("gguf") ||
 		modelId.includes("gemma-4-12b");
 
-	// Regime 2 Protocol: Disable fragile internal thinking on quantized edge weights
+	// Regime 2 Protocol: Disable fragile internal thinking on quantized edge weights (Wanderer & Edge Coder)
 	if (isQuantizedLocal) {
 		return "off";
 	}
