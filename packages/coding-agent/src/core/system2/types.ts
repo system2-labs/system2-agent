@@ -52,6 +52,16 @@ export interface System2RouteDecision {
 export interface System2State {
 	track: System2Track;
 	confidence: number;
+	latency_ms?: number;
+	tookMs?: number;
+	deliberation?: {
+		status: "pass" | "fail";
+		summary?: string;
+		hypothesesCount?: number;
+		selectedHypothesis?: string;
+		confidence?: number;
+	};
+	profile?: string;
 	lastRoutedModel?: {
 		provider: string;
 		id: string;

@@ -53,6 +53,7 @@ System 2 implements Daniel Kahneman's dual-process cognitive model directly into
 | :--- | :--- | :--- |
 | **`Ctrl+P`** | **Cycle Models** | Cycles between active models (`deliberative`, `auto`, `local`, LM Studio models). |
 | **`/model <name>`** | **Select Model** | Opens the interactive model picker or switches directly (e.g. `/model deliberative`). |
+| **`/profile [name]`** | **Model Profiles** | Inspect or switch System 2 profiles (`fast-coding`, `lean-battery`, `cybersec-redteam`, etc.). |
 | **`Shift+Tab`** | **Thinking Level** | Cycles thinking depth: `off` $\to$ `minimal` $\to$ `low` $\to$ `medium` $\to$ `high` $\to$ `max`. |
 | **`Ctrl+O`** | **Expand Output** | Toggles expansion of truncated tool results or full startup telemetry. |
 | **`Escape`** | **Interrupt Turn** | Immediately halts ongoing model inference or tool execution. |

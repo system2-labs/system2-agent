@@ -124,6 +124,7 @@ import {
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import { getSourcePackageKey, type SourceInfo } from "../../core/source-info.ts";
+import { getActiveProfile, getAvailableProfiles, setActiveProfile } from "../../core/system2/index.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import { withBuiltInRenderers } from "../../core/tools/renderers/index.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
@@ -3355,6 +3356,12 @@ export class InteractiveMode {
 				const searchTerm = text.startsWith("/model ") ? text.slice(7).trim() : undefined;
 				this.editor.setText("");
 				await this.handleModelCommand(searchTerm);
+				return;
+			}
+			if (text === "/profile" || text.startsWith("/profile ")) {
+				const profileName = text.startsWith("/profile ") ? text.slice(9).trim() : undefined;
+				this.editor.setText("");
+				this.handleProfileCommand(profileName);
 				return;
 			}
 			if (text === "/thinking" || text.startsWith("/thinking ")) {
@@ -7148,6 +7155,7 @@ export class InteractiveMode {
 | :--- | :--- | :--- |
 | \`${cycleModel}\` (\`Ctrl+P\`) | **Cycle Models** | Switch between \`deliberative\`, \`auto\`, \`local\`, and local models |
 | \`/model <name>\` | **Model Selector** | Switch directly (e.g. \`/model deliberative\` or \`/model auto\`) |
+| \`/profile [name]\` | **Model Profiles** | Show or switch profiles (\`fast-coding\`, \`lean-battery\`, \`cybersec-redteam\`) |
 | \`${cycleThinking}\` (\`Shift+Tab\`) | **Thinking Depth** | Cycle thinking: \`off\` · \`low\` · \`medium\` · \`high\` · \`max\` |
 | \`${expandTools}\` (\`Ctrl+O\`) | **Expand Output** | Toggle expansion of truncated tool results or startup help |
 | \`${interrupt}\` (\`Esc\`) | **Interrupt** | Immediately halt running model inference or tool execution |
@@ -7184,6 +7192,59 @@ Run \`system2 update\` to fast-forward pull the latest code and rebuild the prod
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Markdown(helpText.trim(), 1, 1, this.getMarkdownThemeWithSettings()));
 		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
+		this.ui.requestRender();
+	}
+
+	private handleProfileCommand(profileName?: string): void {
+		if (profileName) {
+			const profile = setActiveProfile(profileName);
+			const rolesList = Object.entries(profile.roles)
+				.map(([role, model]) => `- **${role}**: \`${model}\``)
+				.join("\n");
+			const text = `
+### ✓ System 2 Profile Switched: ${profile.name} (\`${profile.id}\`)
+${profile.description}
+- **Recommended VRAM**: ${profile.recommendedVramGb} GB
+- **Active Role Backbones**:
+${rolesList}
+`;
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Markdown(text.trim(), 1, 1, this.getMarkdownThemeWithSettings()));
+			this.ui.requestRender();
+			return;
+		}
+
+		const active = getActiveProfile();
+		const profiles = getAvailableProfiles();
+		const profileLines = [
+			"# System 2 Model Profiles",
+			"",
+			`**Current Active Profile**: \`${active.id}\` (${active.name})`,
+			"",
+			"| Status | Profile ID | Name | VRAM | Description |",
+			"| :--- | :--- | :--- | :--- | :--- |",
+			...profiles.map((p) => {
+				const marker = p.id === active.id ? "✓ Active" : "Available";
+				return `| ${marker} | \`${p.id}\` | **${p.name}** | ${p.recommendedVramGb} GB | ${p.description} |`;
+			}),
+			"",
+			"**Current Role Backbones:**",
+			...Object.entries(active.roles).map(([role, model]) => `- **${role}**: \`${model}\``),
+			"",
+			"**Usage:** Type `/profile <id>` to switch profiles (e.g. `/profile fast-coding` or `/profile lean-battery`).",
+			"Aliases supported: `coding-swe`, `reasoning-heavy`, `sentinel-strict`, `edge-minimal`.",
+		];
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new DynamicBorder((t) => theme.fg("accent", t)));
+		this.chatContainer.addChild(
+			new ThemedText(() => theme.bold(theme.fg("accent", "System 2 Model Profiles")), 1, 0),
+		);
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(
+			new Markdown(profileLines.join("\n").trim(), 1, 1, this.getMarkdownThemeWithSettings()),
+		);
+		this.chatContainer.addChild(new DynamicBorder((t) => theme.fg("accent", t)));
 		this.ui.requestRender();
 	}
 
