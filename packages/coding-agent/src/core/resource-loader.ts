@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { detectCapabilities, getTerminalColorMode, type TerminalColorMode } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -276,19 +277,24 @@ export function loadProjectContextFiles(options: {
 	const ancestorContextFiles: Array<{ path: string; content: string }> = [];
 
 	const shadowedContextFile = findShadowedContextFile(resolvedCwd);
+	const home = homedir();
 	let currentDir = resolvedCwd;
 
 	while (true) {
-		const contextFile = loadContextFileFromDir(currentDir);
-		// Compare the directory's real path, not the file's: a worktree AGENTS.md that
-		// symlinks to the main repo's file resolves to the shadowed path itself.
-		const isShadowed =
-			shadowedContextFile !== undefined &&
-			contextFile !== null &&
-			pathsEqual(join(canonicalizePath(currentDir), basename(contextFile.path)), shadowedContextFile);
-		if (contextFile && !isShadowed && !seenPaths.has(contextFile.path)) {
-			ancestorContextFiles.unshift(contextFile);
-			seenPaths.add(contextFile.path);
+		// Do not inherit ~/AGENTS.md when running inside a project subfolder unless current working directory IS home
+		const isHomeDir = pathsEqual(currentDir, home);
+		if (!isHomeDir || pathsEqual(resolvedCwd, home)) {
+			const contextFile = loadContextFileFromDir(currentDir);
+			// Compare the directory's real path, not the file's: a worktree AGENTS.md that
+			// symlinks to the main repo's file resolves to the shadowed path itself.
+			const isShadowed =
+				shadowedContextFile !== undefined &&
+				contextFile !== null &&
+				pathsEqual(join(canonicalizePath(currentDir), basename(contextFile.path)), shadowedContextFile);
+			if (contextFile && !isShadowed && !seenPaths.has(contextFile.path)) {
+				ancestorContextFiles.unshift(contextFile);
+				seenPaths.add(contextFile.path);
+			}
 		}
 
 		const parentDir = dirname(currentDir);
