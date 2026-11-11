@@ -459,6 +459,11 @@ export class AgentSession {
 	private _activeSystem2Snapshot: WorktreeSnapshot | null = null;
 	private _lastKnownGoodSnapshot: WorktreeSnapshot | null = null;
 	private readonly _activeToolArgs = new Map<string, Record<string, any>>();
+	private _activeToolInfo: { toolName: string; summary?: string; persona?: string } | null = null;
+
+	public getActiveTool(): { toolName: string; summary?: string; persona?: string } | null {
+		return this._activeToolInfo;
+	}
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -1426,6 +1431,21 @@ export class AgentSession {
 				this._replaceMessageInPlace(event.message, normalized);
 			}
 		} else if (event.type === "tool_execution_start") {
+			let summary: string | undefined;
+			let persona = "Wanderer // Search";
+			if (event.toolName === "bash") persona = "Arbiter // Sandbox";
+			else if (["write", "edit", "write_file"].includes(event.toolName)) persona = "Philosopher // Refactor";
+
+			if (event.args && typeof event.args === "object") {
+				const a = event.args as Record<string, any>;
+				if (typeof a.command === "string") summary = a.command.trim().replace(/\s+/g, " ").slice(0, 36);
+				else if (typeof a.path === "string") summary = a.path.split("/").pop();
+				else if (typeof a.file_path === "string") summary = a.file_path.split("/").pop();
+				else if (typeof a.pattern === "string") summary = a.pattern.trim().slice(0, 24);
+				else if (typeof a.query === "string") summary = a.query.trim().slice(0, 24);
+			}
+			this._activeToolInfo = { toolName: event.toolName, summary, persona };
+
 			if (this.model?.provider === "system2") {
 				const check = await verifyToolCall(event.toolName, event.args as Record<string, any>);
 				if (!check.allowed) {
@@ -1455,6 +1475,7 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_end") {
+			this._activeToolInfo = null;
 			if (this.model?.provider === "system2") {
 				const args = this._activeToolArgs.get(event.toolCallId);
 				this._activeToolArgs.delete(event.toolCallId);
@@ -1473,8 +1494,14 @@ export class AgentSession {
 						: (res?.content ?? "");
 					if (output.includes("failed") || output.includes("FAILED") || output.includes("AssertionError")) {
 						if (this._activeSystem2Snapshot) {
-							await rollbackSnapshot(this._activeSystem2Snapshot);
+							const rb = await rollbackSnapshot(this._activeSystem2Snapshot);
 							this._activeSystem2Snapshot = null;
+							if (this.state) {
+								(this.state as any).deliberation = {
+									status: "fail",
+									summary: `Rollback triggered (${rb.latencyMs}ms)`,
+								};
+							}
 						}
 					} else if (
 						output.includes("passed in") ||
@@ -1484,6 +1511,12 @@ export class AgentSession {
 					) {
 						this._lastKnownGoodSnapshot = this._activeSystem2Snapshot;
 						this._activeSystem2Snapshot = null;
+						if (this.state) {
+							(this.state as any).deliberation = {
+								status: "pass",
+								summary: "Invariant: Pass",
+							};
+						}
 					}
 				}
 			}

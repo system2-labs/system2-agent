@@ -42,20 +42,18 @@ export function formatSystem2FooterModel(
 		s?.system === "sentinel" ||
 		rawTrack === "sentinel" ||
 		(routed?.model?.id ? routed.model.id.toLowerCase().includes("sentinel") : false);
-	const isSys1 = s?.system === 1 || s?.system === "1" || s?.system === "sys1" || s?.system === "Sys1";
 	const isSys2 =
 		!isSentinel &&
-		!isSys1 &&
-		(s?.system === 2 ||
+		(isDeliberative ||
+			s?.deliberation != null ||
+			rawTrack.toLowerCase() === "sys2" ||
+			s?.system === 2 ||
 			s?.system === "2" ||
 			s?.system === "sys2" ||
-			s?.system === "Sys2" ||
-			isDeliberative ||
-			rawTrack.toLowerCase() === "sys2" ||
-			(!routed && !rawModelId));
+			s?.system === "Sys2");
 
 	// Format System 1 track and confidence/timing details
-	const sys1Track = rawTrack === "general" && !routed ? "Auto" : rawTrack;
+	const sys1Track = rawTrack === "general" && !routed ? "Auto" : rawTrack || "Auto";
 	let sys1Details = "";
 	if (s?.confidence !== undefined) {
 		const confPct = `${Math.round(s.confidence * 100)}% conf`;
