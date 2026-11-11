@@ -202,9 +202,11 @@ export function createSystem2AutoModel(runtime: ModelRuntime): VirtualModelDefin
 					: ["math", "logic", "physics"].includes(decision.selected_track)
 						? "Philosopher // Deliberate Reasoning"
 						: "Wanderer // Intent Triage";
-			console.error(
-				`\x1b[38;2;61;139;170m[System 1 Triage]\x1b[0m ${persona} (${Math.round(decision.confidence * 100)}% conf) → \x1b[38;2;239;66;35m${targetModel.provider}/${targetModel.id}\x1b[0m [Regime 2 Protocol: thinking: ${targetThinking}]`,
-			);
+			if (process.env.SYSTEM2_VERBOSE_ROUTING === "1") {
+				console.error(
+					`\x1b[38;2;61;139;170m[System 1 Triage]\x1b[0m ${persona} (${Math.round(decision.confidence * 100)}% conf) → \x1b[38;2;239;66;35m${targetModel.provider}/${targetModel.id}\x1b[0m [Regime 2 Protocol: thinking: ${targetThinking}]`,
+				);
+			}
 
 			const newState: System2State = {
 				track: decision.selected_track,
@@ -257,9 +259,11 @@ export function createSystem2DeliberativeModel(runtime: ModelRuntime): VirtualMo
 				request.thinkingLevel !== "off" ? request.thinkingLevel : "high",
 			);
 
-			console.error(
-				`\x1b[35m[System 2 Deliberator]\x1b[0m Deep Reasoning Track: \x1b[1m${decision.selected_track}\x1b[0m → \x1b[32m${targetModel.provider}/${targetModel.id}\x1b[0m (thinking: ${targetThinking})`,
-			);
+			if (process.env.SYSTEM2_VERBOSE_ROUTING === "1") {
+				console.error(
+					`\x1b[35m[System 2 Deliberator]\x1b[0m Deep Reasoning Track: \x1b[1m${decision.selected_track}\x1b[0m → \x1b[32m${targetModel.provider}/${targetModel.id}\x1b[0m (thinking: ${targetThinking})`,
+				);
+			}
 
 			return {
 				model: targetModel,
@@ -303,9 +307,11 @@ export function createSystem2LocalModel(runtime: ModelRuntime): VirtualModelDefi
 				request.thinkingLevel,
 			);
 
-			console.error(
-				`\x1b[38;2;61;139;170m[System 1]\x1b[0m Track: \x1b[1m${decision.selected_track}\x1b[0m (${Math.round(decision.confidence * 100)}% conf, ${decision.method}) → \x1b[38;2;239;66;35m${targetModel.provider}/${targetModel.id}\x1b[0m (thinking: ${targetThinking})`,
-			);
+			if (process.env.SYSTEM2_VERBOSE_ROUTING === "1") {
+				console.error(
+					`\x1b[38;2;61;139;170m[System 1]\x1b[0m Track: \x1b[1m${decision.selected_track}\x1b[0m (${Math.round(decision.confidence * 100)}% conf, ${decision.method}) → \x1b[38;2;239;66;35m${targetModel.provider}/${targetModel.id}\x1b[0m (thinking: ${targetThinking})`,
+				);
+			}
 
 			return {
 				model: targetModel,
