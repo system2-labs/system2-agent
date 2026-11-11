@@ -1,5 +1,6 @@
 export * from "./checkpoint.ts";
 export * from "./client.ts";
+export * from "./footer.ts";
 export * from "./policy.ts";
 export * from "./profiles.ts";
 export * from "./sentinel.ts";
