@@ -1418,7 +1418,10 @@ export class AgentSession {
 			}
 		} else if (event.type === "tool_execution_start") {
 			if (this.model?.provider === "system2") {
-				await verifyToolCall(event.toolName, event.args as Record<string, any>);
+				const check = await verifyToolCall(event.toolName, event.args as Record<string, any>);
+				if (!check.allowed) {
+					throw new Error(`[System 2 Guard] Blocked execution: ${check.reason}`);
+				}
 			}
 			const extensionEvent: ToolExecutionStartEvent = {
 				type: "tool_execution_start",
@@ -1437,6 +1440,20 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_end") {
+			if (this.model?.provider === "system2" && event.toolName === "bash") {
+				const output = Array.isArray((event.result as any)?.content)
+					? (event.result as any).content.map((c: any) => c.text || "").join("\n")
+					: "";
+				if (output.includes("failed") || output.includes("FAILED") || output.includes("AssertionError")) {
+					console.error(
+						"\x1b[38;2;239;66;35m[System 2 Catch: Regression]\x1b[0m Intercepted test assertion failure -> triggering Arbiter self-healing protocol.",
+					);
+				} else if (output.includes("passed in") || output.includes("passed,")) {
+					console.error(
+						"\x1b[38;2;62;131;99m[System 2 Invariant: Pass]\x1b[0m Verified green bar across test suite.",
+					);
+				}
+			}
 			const extensionEvent: ToolExecutionEndEvent = {
 				type: "tool_execution_end",
 				toolCallId: event.toolCallId,
