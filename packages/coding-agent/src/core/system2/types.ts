@@ -18,6 +18,28 @@ export type System2Track =
 	| "logic"
 	| "general";
 
+export interface System2Config {
+	bridgeUrl?: string;
+	allowOfflineBypass?: boolean;
+}
+
+export type InvariantDomain = "syntax" | "filesystem" | "command_safety" | "semantic";
+
+export interface InvariantViolation {
+	domain: InvariantDomain;
+	rule: string;
+	target?: string;
+	explanation: string;
+}
+
+export interface ToolVerificationResult {
+	allowed: boolean;
+	decision?: "allow" | "block";
+	reason?: string;
+	code?: string;
+	violations?: InvariantViolation[];
+}
+
 export interface System2RouteDecision {
 	selected_track: System2Track;
 	confidence: number;
@@ -48,6 +70,8 @@ export interface System2VerifyRequest {
 
 export interface System2VerifyResult {
 	valid: boolean;
+	code?: string;
+	reason?: string;
 	error?: string;
 	details?: string;
 }

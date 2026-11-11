@@ -1,4 +1,10 @@
-import type { System2RouteDecision, System2Track, System2VerifyRequest, System2VerifyResult } from "./types.ts";
+import type {
+	System2Config,
+	System2RouteDecision,
+	System2Track,
+	System2VerifyRequest,
+	System2VerifyResult,
+} from "./types.ts";
 
 const DEFAULT_BRIDGE_URL = process.env.SYSTEM2_BRIDGE_URL || "http://127.0.0.1:8765";
 
@@ -59,9 +65,12 @@ const LEXICAL_PATTERNS: Record<System2Track, RegExp[]> = {
 
 export class System2Client {
 	private bridgeUrl: string;
+	private allowOfflineBypass: boolean;
 
-	constructor(bridgeUrl: string = DEFAULT_BRIDGE_URL) {
-		this.bridgeUrl = bridgeUrl;
+	constructor(configOrBridgeUrl: System2Config | string = DEFAULT_BRIDGE_URL) {
+		const isStr = typeof configOrBridgeUrl === "string";
+		this.bridgeUrl = (isStr ? configOrBridgeUrl : configOrBridgeUrl?.bridgeUrl) || DEFAULT_BRIDGE_URL;
+		this.allowOfflineBypass = isStr ? false : Boolean(configOrBridgeUrl?.allowOfflineBypass);
 	}
 
 	/**
@@ -166,12 +175,14 @@ export class System2Client {
 				signal: AbortSignal.timeout(2000),
 			});
 
-			if (res.ok) {
-				return (await res.json()) as System2VerifyResult;
-			}
-			return { valid: true, details: "Verification service uncontactable; permitted with warning." };
+			if (res.ok) return (await res.json()) as System2VerifyResult;
+			if (this.allowOfflineBypass) return { valid: true, details: `Permitted with status ${res.status}` };
+			const reason = `System 2 verification daemon error (${res.status}). Tool execution blocked under fail-closed safety policy.`;
+			return { valid: false, code: "SYSTEM2_DAEMON_OFFLINE", reason, error: reason };
 		} catch (e: any) {
-			return { valid: true, details: `Verification bypassed: ${e.message}` };
+			if (this.allowOfflineBypass) return { valid: true, details: `Verification bypassed: ${e.message}` };
+			const reason = "System 2 verification daemon offline. Tool execution blocked under fail-closed safety policy.";
+			return { valid: false, code: "SYSTEM2_DAEMON_OFFLINE", reason, error: reason };
 		}
 	}
 }
