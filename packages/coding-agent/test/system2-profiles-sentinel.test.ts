@@ -4,7 +4,6 @@ import {
 	getAvailableProfiles,
 	getSentinelBuffer,
 	ingestLogChunk,
-	queryLogExcerpt,
 	queryTelemetrySentinel,
 	RollingLogBuffer,
 	setActiveProfile,

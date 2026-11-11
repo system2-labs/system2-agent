@@ -65,13 +65,25 @@ export class RollingLogBuffer {
 		};
 	}
 
-	getLineCount(): number { return this.lines.length; }
-	clear(): void { this.lines = []; }
+	getLineCount(): number {
+		return this.lines.length;
+	}
+	clear(): void {
+		this.lines = [];
+	}
 }
 
 const defaultSentinelBuffer = new RollingLogBuffer();
 
-export function getSentinelBuffer(): RollingLogBuffer { return defaultSentinelBuffer; }
-export function ingestLogChunk(chunk: string): void { defaultSentinelBuffer.ingestLogChunk(chunk); }
-export function queryTelemetrySentinel(query?: string): SentinelSummaryResult { return defaultSentinelBuffer.queryTelemetrySentinel(query); }
-export function queryLogExcerpt(offset: number, maxLines = 50): LogExcerptResult { return defaultSentinelBuffer.queryLogExcerpt(offset, maxLines); }
+export function getSentinelBuffer(): RollingLogBuffer {
+	return defaultSentinelBuffer;
+}
+export function ingestLogChunk(chunk: string): void {
+	defaultSentinelBuffer.ingestLogChunk(chunk);
+}
+export function queryTelemetrySentinel(query?: string): SentinelSummaryResult {
+	return defaultSentinelBuffer.queryTelemetrySentinel(query);
+}
+export function queryLogExcerpt(offset: number, maxLines = 50): LogExcerptResult {
+	return defaultSentinelBuffer.queryLogExcerpt(offset, maxLines);
+}
