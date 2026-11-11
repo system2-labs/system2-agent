@@ -1305,7 +1305,12 @@ export class InteractiveMode {
 	}
 
 	private async checkForPackageUpdates(): Promise<string[]> {
-		if (process.env.PI_OFFLINE || APP_NAME === "system2" || process.env.SYSTEM2_SKIP_UPSTREAM_UPDATES) {
+		if (
+			process.env.PI_OFFLINE ||
+			APP_NAME === "system2" ||
+			process.env.SYSTEM2_SKIP_UPSTREAM_UPDATES ||
+			this.settingsManager.getDefaultProvider() === "system2"
+		) {
 			return [];
 		}
 

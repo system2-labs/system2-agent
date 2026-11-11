@@ -36,9 +36,9 @@ function pickTargetPhysicalModel(
 	}
 
 	if (available.length === 0) {
-		const allModels = runtime.getModels().filter((m) => m.api !== "pi-virtual");
-		if (allModels.length > 0) return allModels[0];
-		throw new Error("No physical models with configured credentials found in Pi.");
+		throw new Error(
+			"No credentialed or local models found. Please ensure LM Studio is running on localhost:1234 or configure credentials in ~/.pi/agent/models.json.",
+		);
 	}
 
 	// Check if local LM Studio models are present
@@ -61,7 +61,12 @@ function pickTargetPhysicalModel(
 		if (lmStudioModels.length > 0) {
 			const localReasoning = lmStudioModels.find(
 				(m) =>
-					m.id.includes("splash") || m.id.includes("iq3_xxs") || m.id.includes("smoll") || m.id.includes("qwen"),
+					m.id.includes("splash") ||
+					m.id.includes("iq3_xxs") ||
+					m.id.includes("smoll") ||
+					m.id.includes("heretic") ||
+					m.id.includes("qwen3.5-9b") ||
+					m.id.includes("qwen"),
 			);
 			if (localReasoning) return localReasoning;
 		}
@@ -80,8 +85,10 @@ function pickTargetPhysicalModel(
 	// 3. Polyglot code trace track
 	if (track === "code") {
 		if (lmStudioModels.length > 0) {
-			// Prioritize proven 27B / splash / iq3_xxs / smoll variants tested in benchmarks
+			// Prioritize proven 27B / splash / iq3_xxs / smoll / qwen3.5-9b variants tested in benchmarks
 			const localCoder = [
+				lmStudioModels.find((m) => m.id.includes("qwen3.5-9b")),
+				lmStudioModels.find((m) => m.id.includes("heretic")),
 				lmStudioModels.find((m) => m.id === "qwen-3.8-27b-intermediate@iq3_xxs"),
 				lmStudioModels.find((m) => m.id === "qwen3.8-27b-splash"),
 				lmStudioModels.find((m) => m.id === "qwen-3.8-27b-smoll"),
@@ -102,14 +109,18 @@ function pickTargetPhysicalModel(
 		if (codeCandidates.length > 0) return codeCandidates[0];
 	}
 
-	// 4. Lightweight / high-speed general track (prefer Qwen if tools are needed, or Gemma for pure text)
+	// 4. Lightweight / high-speed general track (prefer Qwen3.5-9b / Heretic if available)
 	if (track === "general") {
 		if (lmStudioModels.length > 0) {
 			const preferredLocal = [
+				lmStudioModels.find((m) => m.id.includes("qwen3.5-9b")),
+				lmStudioModels.find((m) => m.id.includes("heretic")),
 				lmStudioModels.find((m) => m.id === "qwen-3.8-27b-intermediate@iq3_xxs"),
 				lmStudioModels.find((m) => m.id === "qwen3.8-27b-splash"),
 				lmStudioModels.find((m) => m.id === "qwen-3.8-27b-smoll"),
+				lmStudioModels.find((m) => m.id.includes("gemma-4-e2b")),
 				lmStudioModels.find((m) => m.id.includes("gemma-4-12b")),
+				lmStudioModels.find((m) => m.id.includes("qwen")),
 			].filter((m): m is Model<Api> => Boolean(m))[0];
 
 			if (preferredLocal) return preferredLocal;
@@ -126,7 +137,13 @@ function pickTargetPhysicalModel(
 	}
 
 	// 5. Default fallback
-	if (lmStudioModels.length > 0 && localOnly) return lmStudioModels[0];
+	if (lmStudioModels.length > 0) {
+		const topLmStudio =
+			lmStudioModels.find((m) => m.id.includes("qwen3.5-9b")) ||
+			lmStudioModels.find((m) => m.id.includes("heretic")) ||
+			lmStudioModels[0];
+		if (localOnly || topLmStudio) return topLmStudio;
+	}
 	return previousModel || available[0];
 }
 
