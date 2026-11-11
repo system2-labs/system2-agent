@@ -23,6 +23,7 @@ describe("AgentSession System 2 regression interception and rollback", () => {
 
 		const agent = new Agent({
 			getApiKey: () => "k",
+			streamFn: (() => {}) as any,
 			initialState: {
 				model: { id: "s2", name: "S2", provider: "system2", api: "anthropic-messages" } as any,
 				systemPrompt: "S2",
