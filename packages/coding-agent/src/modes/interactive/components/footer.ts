@@ -247,7 +247,8 @@ export class FooterComponent implements Component {
 
 		// Prepend the provider in parentheses if there are multiple providers and there's enough room
 		let rightSide = rightSideWithoutProvider;
-		if (routed && (state.model?.provider === "system2" || routed.model.provider === "system2")) {
+		const isSystem2 = state.model?.provider === "system2" || routed?.model.provider === "system2";
+		if (isSystem2) {
 			rightSide = formatSystem2FooterModel(routed, state);
 		} else if (this.footerData.getAvailableProviderCount() > 1 && state.model) {
 			rightSide = `(${state.model!.provider}) ${rightSideWithoutProvider}`;
@@ -255,6 +256,13 @@ export class FooterComponent implements Component {
 				// Too wide, fall back
 				rightSide = rightSideWithoutProvider;
 			}
+		}
+
+		// Dynamic active tool insight
+		const activeTool = (this.session as any).getActiveTool?.();
+		if (activeTool) {
+			const toolBadge = `\x1b[38;2;255;183;3m⚡ [${activeTool.toolName}${activeTool.summary ? `: ${activeTool.summary}` : ""}]\x1b[0m`;
+			rightSide = `${toolBadge} ${rightSide}`;
 		}
 
 		const rightSideWidth = visibleWidth(rightSide);

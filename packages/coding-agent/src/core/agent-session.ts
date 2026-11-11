@@ -459,6 +459,11 @@ export class AgentSession {
 	private _activeSystem2Snapshot: WorktreeSnapshot | null = null;
 	private _lastKnownGoodSnapshot: WorktreeSnapshot | null = null;
 	private readonly _activeToolArgs = new Map<string, Record<string, any>>();
+	private _activeToolInfo: { toolName: string; summary?: string } | null = null;
+
+	public getActiveTool(): { toolName: string; summary?: string } | null {
+		return this._activeToolInfo;
+	}
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -1426,6 +1431,15 @@ export class AgentSession {
 				this._replaceMessageInPlace(event.message, normalized);
 			}
 		} else if (event.type === "tool_execution_start") {
+			let summary: string | undefined;
+			if (event.args && typeof event.args === "object") {
+				const a = event.args as Record<string, any>;
+				if (typeof a.command === "string") summary = a.command.trim().slice(0, 32);
+				else if (typeof a.path === "string") summary = a.path.split("/").pop();
+				else if (typeof a.query === "string") summary = a.query.trim().slice(0, 32);
+			}
+			this._activeToolInfo = { toolName: event.toolName, summary };
+
 			if (this.model?.provider === "system2") {
 				const check = await verifyToolCall(event.toolName, event.args as Record<string, any>);
 				if (!check.allowed) {
@@ -1455,6 +1469,7 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_end") {
+			this._activeToolInfo = null;
 			if (this.model?.provider === "system2") {
 				const args = this._activeToolArgs.get(event.toolCallId);
 				this._activeToolArgs.delete(event.toolCallId);

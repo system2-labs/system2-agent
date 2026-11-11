@@ -5,7 +5,7 @@
 	"type": "module",
 	"piConfig": {
 		"name": "system2",
-		"configDir": ".system2"
+		"configDir": ".pi"
 	},
 	"bin": {
 		"pi": "dist/bundle/cli.js",

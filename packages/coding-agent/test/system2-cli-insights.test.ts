@@ -113,24 +113,40 @@ describe("System 2 CLI Insights, Prompt Collision Fix & Update Decoupling", () =
 				{ model: { id: "qwen3.5-9b", provider: "system2" }, thinkingLevel: "low" },
 				{ track: "code", system: 1 },
 			);
-			expect(sys1Formatted).toBe("\x1b[38;2;239;66;35m[Sys1: code]\x1b[0m Artisan • low");
+			expect(sys1Formatted).toBe(
+				"\x1b[38;2;239;66;35m[Sys1: code]\x1b[0m → \x1b[1mArtisan\x1b[0m (qwen3.5-9b) • low",
+			);
 
 			// Sys2 (Cobalt Blue: #3D8BAA -> rgb(61, 139, 170))
 			const sys2Formatted = formatSystem2FooterModel(
 				{ model: { id: "qwen-3.8-27b-intermediate@iq3_xxs", provider: "system2" }, thinkingLevel: "high" },
 				{ track: "logic", system: 2 },
 			);
-			expect(sys2Formatted).toBe("\x1b[38;2;61;139;170m[Sys2: logic]\x1b[0m Sweetspot • high");
+			expect(sys2Formatted).toBe(
+				"\x1b[38;2;61;139;170m[Sys2: logic]\x1b[0m → \x1b[1mSweetspot\x1b[0m (qwen-3.8-27b-intermediate@iq3_xxs) • high",
+			);
 
 			// Sentinel (Cadmium Yellow: #FFB703 -> rgb(255, 183, 3))
 			const sentinelFormatted = formatSystem2FooterModel(
 				{ model: { id: "lfm2.5-1.2b-instruct", provider: "system2" } },
 				{ isSentinel: true },
 			);
-			expect(sentinelFormatted).toBe("\x1b[38;2;255;183;3m[Sentinel]\x1b[0m Sentinel");
+			expect(sentinelFormatted).toBe(
+				"\x1b[38;2;255;183;3m[Sentinel]\x1b[0m → \x1b[1mSentinel\x1b[0m (lfm2.5-1.2b-instruct)",
+			);
+
+			// Idle state before first user turn
+			const idleSys2 = formatSystem2FooterModel(undefined, {
+				model: { id: "deliberative" },
+				thinkingLevel: "medium",
+			});
+			expect(idleSys2).toBe("\x1b[38;2;61;139;170m[Sys2: Deliberative]\x1b[0m • medium");
+
+			const idleSys1 = formatSystem2FooterModel(undefined, { model: { id: "auto" }, thinkingLevel: "off" });
+			expect(idleSys1).toBe("\x1b[38;2;239;66;35m[Sys1: Auto]\x1b[0m • off");
 		});
 
-		it("footer component integrates System 2 Mondrian formatting", () => {
+		it("footer component integrates System 2 Mondrian formatting and dynamic tools", () => {
 			const mockSession = {
 				sessionManager: {
 					getCwd: () => "/workspace/test",
@@ -144,6 +160,7 @@ describe("System 2 CLI Insights, Prompt Collision Fix & Update Decoupling", () =
 				routedModel: { model: { id: "qwen3.5-9b", provider: "system2" }, thinkingLevel: "low" },
 				modelRuntime: { isUsingSubscription: () => false },
 				getContextUsage: () => undefined,
+				getActiveTool: () => ({ toolName: "bash", summary: "git status" }),
 			};
 			const mockFooterData = {
 				getGitBranch: () => "main",
@@ -151,20 +168,24 @@ describe("System 2 CLI Insights, Prompt Collision Fix & Update Decoupling", () =
 				getExtensionStatuses: () => new Map(),
 			};
 			const footer = new FooterComponent(mockSession as any, mockFooterData as any);
-			expect(footer.render(100)[1]).toContain("\x1b[38;2;239;66;35m[Sys1: code]\x1b[0m Artisan • low");
+			const rendered = footer.render(120)[1];
+			expect(rendered).toContain("\x1b[38;2;255;183;3m⚡ [bash: git status]\x1b[0m");
+			expect(rendered).toContain(
+				"\x1b[38;2;239;66;35m[Sys1: code]\x1b[0m → \x1b[1mArtisan\x1b[0m (qwen3.5-9b) • low",
+			);
 		});
 	});
 
 	describe("upstream_update_decoupling", () => {
 		it("sets system2 branding in package.json and config", () => {
 			expect(APP_NAME).toBe("system2");
-			expect(CONFIG_DIR_NAME).toBe(".system2");
+			expect(CONFIG_DIR_NAME).toBe(".pi");
 
 			const pkgPath = resolve(__dirname, "../package.json");
 			expect(existsSync(pkgPath)).toBe(true);
 			const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
 			expect(pkg.piConfig?.name).toBe("system2");
-			expect(pkg.piConfig?.configDir).toBe(".system2");
+			expect(pkg.piConfig?.configDir).toBe(".pi");
 			expect(pkg.bin?.system2).toBe("dist/bundle/cli.js");
 		});
 
