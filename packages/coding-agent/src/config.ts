@@ -339,9 +339,21 @@ export function getSelfUpdateCommand(
  * argv, no quoting), else the global `selfUpdateCommand` setting. Overrides install-method detection.
  */
 export function getConfiguredSelfUpdateArgv(setting: string[] | undefined): string[] | undefined {
-	const fromEnv = process.env.PI_SELF_UPDATE_COMMAND?.trim().split(/\s+/).filter(Boolean);
+	const fromEnv = (process.env.SYSTEM2_SELF_UPDATE_COMMAND || process.env.PI_SELF_UPDATE_COMMAND)
+		?.trim()
+		.split(/\s+/)
+		.filter(Boolean);
 	if (fromEnv?.length) return fromEnv;
-	return setting?.length ? setting : undefined;
+	if (setting?.length) return setting;
+
+	// In System 2 source checkout, automatically use the bundled self-update engine
+	if (APP_NAME === "system2") {
+		const updateScript = resolve(dirname(dirname(getAgentDir())), "pi-system2/scripts/system2-update.sh");
+		if (existsSync(updateScript)) {
+			return ["/bin/bash", updateScript];
+		}
+	}
+	return undefined;
 }
 
 /** Fill the `{packageName}`, `{version}`, and `{installSpec}` placeholders of a configured self-update command. */
