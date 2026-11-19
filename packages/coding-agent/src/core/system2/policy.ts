@@ -23,7 +23,7 @@ export const IMMUTABLE_KERNEL_DOMAINS = [
 export type ImmutableKernelDomain = (typeof IMMUTABLE_KERNEL_DOMAINS)[number];
 export const IMMUTABLE_KERNEL_PATHS = IMMUTABLE_KERNEL_DOMAINS;
 export const IMMUTABLE_COMPONENTS = IMMUTABLE_KERNEL_DOMAINS;
-export const PROTECTED_CORE_TOOLS = ["bash", "write_file", "edit"] as const;
+export const PROTECTED_CORE_TOOLS = ["bash", "write", "write_file", "edit"] as const;
 
 const GUARD_BOUNDARY_ALIASES = [
 	"invariant-guards",
@@ -35,6 +35,14 @@ const GUARD_BOUNDARY_ALIASES = [
 	"scope_lock",
 	"diff_budget",
 ] as const;
+
+const IMMUTABLE_DOMAIN_SET = new Set<string>(
+	[...IMMUTABLE_KERNEL_DOMAINS, ...GUARD_BOUNDARY_ALIASES].map((d) => d.toLowerCase()),
+);
+
+function isImmutableDomain(value: unknown): value is string {
+	return typeof value === "string" && IMMUTABLE_DOMAIN_SET.has(value.trim().toLowerCase());
+}
 
 const PROMPT_INJECTIONS = [
 	/bypass.*verifier/i,
@@ -54,6 +62,7 @@ const PROMPT_INJECTIONS = [
 	/override.*diff[\s_-]*budget/i,
 	/ignore.*diff[\s_-]*budget/i,
 	/weaken.*(?:scope|budget|guard)/i,
+	/(?:bypass|disable|override|ignore|skip|turn\s+off|remove|relax|lift|drop|weaken).*?(?:verifier|invariant|verification|safety|scope[\s_-]*lock|diff[\s_-]*budget|task[\s_-]*scope)/i,
 ];
 
 export class PolicyBoundaryViolation extends Error {
@@ -107,38 +116,39 @@ export function validatePolicyMutation(
 	const violations: string[] = [];
 	if (!mutation || typeof mutation !== "object") return { valid: false, violations: ["Mutation must be an object"] };
 
-	for (const domain of IMMUTABLE_KERNEL_DOMAINS) {
-		if (domain in mutation) violations.push(`Cannot mutate immutable kernel domain: '${domain}'`);
-	}
-	for (const key of [mutation.target, mutation.domain]) {
-		if (
-			key &&
-			((IMMUTABLE_KERNEL_DOMAINS as readonly string[]).includes(key) ||
-				(GUARD_BOUNDARY_ALIASES as readonly string[]).includes(key))
-		) {
-			violations.push(`Target '${key}' is an immutable kernel domain`);
+	for (const key of Object.keys(mutation)) {
+		if (isImmutableDomain(key)) {
+			violations.push(`Cannot mutate immutable kernel domain: '${key}'`);
 		}
 	}
-	for (const alias of GUARD_BOUNDARY_ALIASES) {
-		if (alias in mutation) {
-			violations.push(`Cannot mutate immutable kernel domain: '${alias}'`);
+	for (const key of [mutation.target, mutation.domain]) {
+		if (isImmutableDomain(key)) {
+			violations.push(`Target '${key}' is an immutable kernel domain`);
 		}
 	}
 
 	if (mutation.tools && typeof mutation.tools === "object") {
-		for (const tool of Object.keys(mutation.tools)) {
-			if ((PROTECTED_CORE_TOOLS as readonly string[]).includes(tool)) {
+		for (const [tool, def] of Object.entries(mutation.tools)) {
+			if ((PROTECTED_CORE_TOOLS as readonly string[]).includes(tool.trim().toLowerCase())) {
 				violations.push(`Cannot shadow protected core tool '${tool}'`);
 			}
-			if ((IMMUTABLE_KERNEL_DOMAINS as readonly string[]).includes(tool)) {
+			if (isImmutableDomain(tool)) {
 				violations.push(`Cannot register tool for immutable kernel domain '${tool}'`);
+			}
+			if (def && typeof def === "object") {
+				const toolDef = def as { description?: unknown; handlerSnippet?: unknown };
+				for (const field of [toolDef.description, toolDef.handlerSnippet]) {
+					if (typeof field === "string" && PROMPT_INJECTIONS.some((p) => p.test(field))) {
+						violations.push(`Prompt injection detected in tool '${tool}': attempt to bypass verification`);
+					}
+				}
 			}
 		}
 	}
 
 	if (mutation.prompts && typeof mutation.prompts === "object") {
 		for (const [key, text] of Object.entries(mutation.prompts)) {
-			if ((IMMUTABLE_KERNEL_DOMAINS as readonly string[]).includes(key)) {
+			if (isImmutableDomain(key)) {
 				violations.push(`Cannot mutate prompt for immutable kernel domain '${key}'`);
 			}
 			if (typeof text === "string" && PROMPT_INJECTIONS.some((p) => p.test(text))) {
@@ -149,7 +159,7 @@ export function validatePolicyMutation(
 
 	if (mutation.routing && typeof mutation.routing === "object") {
 		for (const key of Object.keys(mutation.routing)) {
-			if ((IMMUTABLE_KERNEL_DOMAINS as readonly string[]).includes(key)) {
+			if (isImmutableDomain(key)) {
 				violations.push(`Cannot mutate routing for immutable kernel domain '${key}'`);
 			}
 		}

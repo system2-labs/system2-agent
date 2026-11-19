@@ -153,7 +153,13 @@ function matchesScopePattern(relTarget: string, canonicalTargetNorm: string, pat
 		return false;
 	}
 
-	const normalized = pattern.replace(/\\/g, "/").replace(/^\.\//, "");
+	const trimmedPattern = pattern.replace(/\\/g, "/").trim();
+	if (!trimmedPattern) return false;
+	if (trimmedPattern === "." || /^(?:\.\/)+\.?$/.test(trimmedPattern)) {
+		return true;
+	}
+
+	const normalized = trimmedPattern.replace(/^(?:\.\/)+/, "");
 	if (!normalized) return false;
 	if (normalized.endsWith("/")) {
 		return relTarget.startsWith(normalized);
@@ -300,8 +306,8 @@ export function computeToolDiffDelta(
 			}
 			return { filePath: resolvedPath, addedLines, changedLines };
 		}
-		if (params.oldText !== undefined && params.newText !== undefined) {
-			const diff = computeLineDiffCounts(String(params.oldText), String(params.newText));
+		if (params.oldText !== undefined || params.newText !== undefined) {
+			const diff = computeLineDiffCounts(String(params.oldText ?? ""), String(params.newText ?? ""));
 			return { filePath: resolvedPath, addedLines: diff.addedLines, changedLines: diff.changedLines };
 		}
 	}
@@ -330,7 +336,7 @@ export class DiffBudgetTracker {
 	}
 
 	checkDelta(delta: DiffDelta, budget: DiffBudget, rawTarget?: string): InvariantViolation | null {
-		const normalized = resolve(delta.filePath);
+		const normalized = safeRealpath(delta.filePath);
 		const target = rawTarget ?? delta.filePath;
 		const projectedFiles = this.touchedFiles.size + (this.touchedFiles.has(normalized) ? 0 : 1);
 		if (budget.maxFiles !== undefined && projectedFiles > budget.maxFiles) {
@@ -366,7 +372,7 @@ export class DiffBudgetTracker {
 	}
 
 	recordAllowed(delta: DiffDelta): void {
-		this.touchedFiles.add(resolve(delta.filePath));
+		this.touchedFiles.add(safeRealpath(delta.filePath));
 		this.addedLines += delta.addedLines;
 		this.changedLines += delta.changedLines;
 	}
@@ -433,10 +439,11 @@ export async function verifyToolCall(
 		}
 
 		let content = params.content ?? params.code ?? params.newText;
-		if (content === undefined && filePath && existsSync(filePath) && Array.isArray(params.edits)) {
+		const resolvedFilePath = filePath ? resolve(cwd, filePath) : "";
+		if (content === undefined && resolvedFilePath && existsSync(resolvedFilePath) && Array.isArray(params.edits)) {
 			content = params.edits.reduce(
 				(acc: string, e: any) => (e.oldText && e.newText !== undefined ? acc.replace(e.oldText, e.newText) : acc),
-				readFileSync(filePath, "utf-8"),
+				readFileSync(resolvedFilePath, "utf-8"),
 			);
 		}
 		if (content !== undefined && filePath) {
