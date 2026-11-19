@@ -151,7 +151,6 @@ import {
 	captureSnapshot,
 	ingestLogChunk,
 	type MatchedError,
-	queryTelemetrySentinel,
 	RollingLogBuffer,
 	rollbackSnapshot,
 	System2TrajectoryLogger,
@@ -472,7 +471,6 @@ export class AgentSession {
 	private _lastSystem2Feedback: string | null = null;
 	private _lastMutatingToolCall: { tool: string; args: Record<string, unknown> } | null = null;
 	private readonly _ingestedBashOutputs = new Map<string, string>();
-	private readonly _bashSentinelStartLine = new Map<string, number>();
 
 	public getActiveTool(): { toolName: string; summary?: string; persona?: string } | null {
 		return this._activeToolInfo;
@@ -1494,9 +1492,6 @@ export class AgentSession {
 				if (["write", "edit", "write_file"].includes(event.toolName)) {
 					this._lastMutatingToolCall = { tool: event.toolName, args: toolArgs };
 				}
-				if (event.toolName === "bash") {
-					this._bashSentinelStartLine.set(event.toolCallId, this._system2Sentinel.getLineCount());
-				}
 			}
 			const extensionEvent: ToolExecutionStartEvent = {
 				type: "tool_execution_start",
@@ -1568,22 +1563,26 @@ export class AgentSession {
 				if (event.toolName === "bash") {
 					const output = this._extractToolResultText(event.result);
 					this._ingestBashSentinelChunk(event.toolCallId, output);
+					const fullCallOutput = this._ingestedBashOutputs.get(event.toolCallId) ?? output;
 					this._ingestedBashOutputs.delete(event.toolCallId);
 
-					const startLine = this._bashSentinelStartLine.get(event.toolCallId) ?? 0;
-					this._bashSentinelStartLine.delete(event.toolCallId);
-					const sessionSentinel = this._system2Sentinel.queryTelemetrySentinel();
-					const callMatchedErrors =
-						sessionSentinel.totalLines > 0
-							? sessionSentinel.matchedErrors.filter((err) => err.line > startLine)
-							: queryTelemetrySentinel().matchedErrors;
+					// Evaluate sentinel errors on a fresh per-call buffer over the deduplicated
+					// call output so cross-session defaultSentinelBuffer state never leaks in
+					// and 5000-line ring-buffer wrap on _system2Sentinel never blinds detection.
+					const callBuffer = new RollingLogBuffer();
+					callBuffer.ingestLogChunk(fullCallOutput);
+					const rawCallErrors = callBuffer.queryTelemetrySentinel().matchedErrors;
+					const actionableErrors = this._filterActionableSentinelErrors(rawCallErrors, event.isError);
+					if (actionableErrors.length === 0 && fullCallOutput) {
+						const rawLines = fullCallOutput.split(/\r?\n/);
+						for (let i = 0; i < rawLines.length; i++) {
+							if (/^\s*FAIL(?:\s|:)/.test(rawLines[i])) {
+								actionableErrors.push({ line: i + 1, text: rawLines[i] });
+							}
+						}
+					}
 
-					const hasFailureSignal =
-						event.isError ||
-						callMatchedErrors.length > 0 ||
-						output.includes("failed") ||
-						output.includes("FAILED") ||
-						output.includes("AssertionError");
+					const hasFailureSignal = event.isError || actionableErrors.length > 0;
 
 					if (hasFailureSignal) {
 						let rbLatencyMs: number | undefined;
@@ -1601,10 +1600,10 @@ export class AgentSession {
 						const rejectedCall = this._lastMutatingToolCall ?? { tool: "bash", args: args ?? {} };
 						this._lastMutatingToolCall = null;
 						const context = this._buildSystem2Context(rejectedCall.args);
-						const topErrors = callMatchedErrors.slice(0, 5);
+						const topErrors = actionableErrors.slice(0, 5);
 						const reason =
 							topErrors.length > 0
-								? `Sentinel detected ${callMatchedErrors.length} error${callMatchedErrors.length === 1 ? "" : "s"}: ${topErrors[0].text}`
+								? `Sentinel detected ${actionableErrors.length} error${actionableErrors.length === 1 ? "" : "s"}: ${topErrors[0].text}`
 								: "Bash verification failed";
 						const feedback = this._formatSystem2Feedback({
 							prefix: "[System 2 Rollback]",
@@ -1633,7 +1632,8 @@ export class AgentSession {
 						output.includes("passed in") ||
 						output.includes("passed,") ||
 						output.includes("Tests  passed") ||
-						output.includes("✓")
+						output.includes("✓") ||
+						/\b\d+\s+passed\b/.test(output)
 					) {
 						this._lastKnownGoodSnapshot = this._activeSystem2Snapshot;
 						this._activeSystem2Snapshot = null;
@@ -1858,6 +1858,35 @@ export class AgentSession {
 		if (!delta) return;
 		this._system2Sentinel.ingestLogChunk(delta);
 		ingestLogChunk(delta);
+	}
+
+	/**
+	 * Filter raw sentinel matches to actionable failure lines so passing test
+	 * suites (e.g. checkmarked test names mentioning "error" or "0 errors, 0 failed")
+	 * do not trigger false rollbacks when a command exits cleanly.
+	 */
+	private _filterActionableSentinelErrors(errors: MatchedError[], isError: boolean): MatchedError[] {
+		const passingCheckLine = /^\s*[✓✔]/;
+		const zeroErrorSummaryLine = /\b0\s+(?:errors?|failed|failures?)\b/i;
+		const nonzeroErrorCount = /\b[1-9]\d*\s+(?:errors?|failed|failures?)\b/i;
+		const explicitFailureCaseSensitive =
+			/\bFAILED\b|^\s*FAIL(?:\s|:)|\bAssertionError\b|\bTraceback\b|\b(?:TypeError|SyntaxError|ReferenceError|RangeError|EvalError|URIError|Error|ERROR|FATAL|CRITICAL):/;
+		const explicitFailureCaseInsensitive =
+			/\bpanic:|\bexception:|\b[1-9]\d*\s+(?:errors?|failed|failures?)\b|\b(?:test|tests|build|task|command|check|suite)\s+failed\b/i;
+
+		return errors.filter((err) => {
+			const text = err.text;
+			if (passingCheckLine.test(text)) return false;
+			if (
+				zeroErrorSummaryLine.test(text) &&
+				!nonzeroErrorCount.test(text) &&
+				!explicitFailureCaseSensitive.test(text)
+			) {
+				return false;
+			}
+			if (isError) return true;
+			return explicitFailureCaseSensitive.test(text) || explicitFailureCaseInsensitive.test(text);
+		});
 	}
 
 	private _extractToolTarget(args?: Record<string, unknown>): string | undefined {

@@ -10,6 +10,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import {
 	getSentinelBuffer,
+	ingestLogChunk,
 	loadRecentMistakes,
 	queryTelemetrySentinel,
 	type System2TrajectoryRecord,
@@ -301,5 +302,138 @@ describe("System 2 sentinel wiring, structured write-backs, and JSONL trajectori
 		expect(recent).toHaveLength(2);
 		expect(recent[0].eventual_passing_fix).not.toBeNull();
 		expect(recent[0].session_id).toBe(session.sessionId);
+	});
+
+	it("isolates per-session sentinel from stale global buffer errors on silent passing bash commands", async () => {
+		const emit = (session as any)._handleAgentEvent;
+		const calcPath = join(repoDir, "calc.ts");
+		const updatedCode = "export const add = (a: number, b: number) => a + b + 0;\n";
+
+		// Seed stale error from an unrelated session into the module-global buffer.
+		ingestLogChunk("ERROR: stale error from Session A\n");
+
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "e-iso",
+			toolName: "edit",
+			args: { path: calcPath, newText: updatedCode },
+		});
+		writeFileSync(calcPath, updatedCode);
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "e-iso",
+			toolName: "edit",
+			result: { content: [{ text: "ok" }] },
+			isError: false,
+		});
+
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "b-silent",
+			toolName: "bash",
+			args: { command: "true" },
+		});
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "b-silent",
+			toolName: "bash",
+			result: { content: [{ text: "" }] },
+			isError: false,
+		});
+
+		expect(readFileSync(calcPath, "utf-8")).toBe(updatedCode);
+		expect(session.lastSystem2Feedback).toBeNull();
+	});
+
+	it("still detects sentinel errors and rolls back after exceeding the 5000-line ring-buffer capacity", async () => {
+		const emit = (session as any)._handleAgentEvent;
+		const calcPath = join(repoDir, "calc.ts");
+
+		// Fill the session's RollingLogBuffer past its 5000-line cap.
+		const filler = Array.from({ length: 5005 }, (_, i) => `INFO: boot line ${i + 1}`).join("\n");
+		session.system2Sentinel.ingestLogChunk(filler);
+		expect(session.system2Sentinel.getLineCount()).toBe(5000);
+
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "e-wrap",
+			toolName: "edit",
+			args: { path: calcPath, newText: "export const add = (a: number, b: number) => a - b;\n" },
+		});
+		writeFileSync(calcPath, "export const add = (a: number, b: number) => a - b;\n");
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "e-wrap",
+			toolName: "edit",
+			result: { content: [{ text: "ok" }] },
+			isError: false,
+		});
+
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "b-wrap",
+			toolName: "bash",
+			args: { command: "node test.js" },
+		});
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "b-wrap",
+			toolName: "bash",
+			result: { content: [{ text: "TypeError: cannot read properties of undefined" }] },
+			isError: false,
+		});
+
+		expect(readFileSync(calcPath, "utf-8")).toBe("export const add = (a: number, b: number) => a + b;\n");
+		expect(session.lastSystem2Feedback).toContain("[System 2 Rollback]");
+		expect(session.lastSystem2Feedback).toContain("TypeError: cannot read properties of undefined");
+		const records = readJsonlRecords();
+		expect(records).toHaveLength(1);
+		expect(records[0].stage).toBe("rollback");
+	});
+
+	it("does not roll back on passing test output mentioning benign error keywords or zero-error summaries", async () => {
+		const emit = (session as any)._handleAgentEvent;
+		const calcPath = join(repoDir, "calc.ts");
+		const updatedCode = "export const add = (a: number, b: number) => a + b;\nexport const zero = 0;\n";
+
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "e-benign",
+			toolName: "edit",
+			args: { path: calcPath, newText: updatedCode },
+		});
+		writeFileSync(calcPath, updatedCode);
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "e-benign",
+			toolName: "edit",
+			result: { content: [{ text: "ok" }] },
+			isError: false,
+		});
+
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "b-benign",
+			toolName: "bash",
+			args: { command: "vitest --run" },
+		});
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "b-benign",
+			toolName: "bash",
+			result: {
+				content: [
+					{
+						text: "✓ handles syntax error cleanly\nTest Files  1 passed (1)\nTests  5 passed (5)\n0 errors, 0 failed",
+					},
+				],
+			},
+			isError: false,
+		});
+
+		expect(readFileSync(calcPath, "utf-8")).toBe(updatedCode);
+		expect(session.lastSystem2Feedback).toBeNull();
+		expect(session.activeSystem2Snapshot).toBeNull();
+		expect((session.state as any).deliberation?.status).toBe("pass");
 	});
 });
