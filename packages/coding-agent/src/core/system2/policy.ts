@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { TaskGuardPolicy } from "./types.ts";
 
 export interface EvolvablePolicy {
 	version: number;
@@ -15,12 +16,25 @@ export const IMMUTABLE_KERNEL_DOMAINS = [
 	"invariants",
 	"agent-session-core",
 	"process-runner",
+	"scope-lock",
+	"diff-budget",
 ] as const;
 
 export type ImmutableKernelDomain = (typeof IMMUTABLE_KERNEL_DOMAINS)[number];
 export const IMMUTABLE_KERNEL_PATHS = IMMUTABLE_KERNEL_DOMAINS;
 export const IMMUTABLE_COMPONENTS = IMMUTABLE_KERNEL_DOMAINS;
 export const PROTECTED_CORE_TOOLS = ["bash", "write_file", "edit"] as const;
+
+const GUARD_BOUNDARY_ALIASES = [
+	"invariant-guards",
+	"invariant guards",
+	"scopeLock",
+	"diffBudget",
+	"scope lock",
+	"diff budget",
+	"scope_lock",
+	"diff_budget",
+] as const;
 
 const PROMPT_INJECTIONS = [
 	/bypass.*verifier/i,
@@ -31,6 +45,15 @@ const PROMPT_INJECTIONS = [
 	/skip.*verifier/i,
 	/disable.*safety/i,
 	/override.*invariant/i,
+	/bypass.*scope[\s_-]*lock/i,
+	/disable.*scope[\s_-]*lock/i,
+	/override.*scope[\s_-]*lock/i,
+	/ignore.*scope[\s_-]*lock/i,
+	/bypass.*diff[\s_-]*budget/i,
+	/disable.*diff[\s_-]*budget/i,
+	/override.*diff[\s_-]*budget/i,
+	/ignore.*diff[\s_-]*budget/i,
+	/weaken.*(?:scope|budget|guard)/i,
 ];
 
 export class PolicyBoundaryViolation extends Error {
@@ -88,12 +111,18 @@ export function validatePolicyMutation(
 		if (domain in mutation) violations.push(`Cannot mutate immutable kernel domain: '${domain}'`);
 	}
 	for (const key of [mutation.target, mutation.domain]) {
-		if (key && (IMMUTABLE_KERNEL_DOMAINS.includes(key) || key === "invariant guards")) {
+		if (
+			key &&
+			((IMMUTABLE_KERNEL_DOMAINS as readonly string[]).includes(key) ||
+				(GUARD_BOUNDARY_ALIASES as readonly string[]).includes(key))
+		) {
 			violations.push(`Target '${key}' is an immutable kernel domain`);
 		}
 	}
-	if ("invariant-guards" in mutation || "invariant guards" in mutation) {
-		violations.push("Cannot mutate immutable kernel domain: 'invariant guards'");
+	for (const alias of GUARD_BOUNDARY_ALIASES) {
+		if (alias in mutation) {
+			violations.push(`Cannot mutate immutable kernel domain: '${alias}'`);
+		}
 	}
 
 	if (mutation.tools && typeof mutation.tools === "object") {
@@ -162,4 +191,66 @@ export function resolvePolicyRoute(
 		preferredModel: route?.preferredModel,
 		keywords: route?.keywords ? [...route.keywords] : [],
 	};
+}
+
+export function validateTaskGuardPolicy(policy: TaskGuardPolicy): { valid: boolean; violations: string[] } {
+	const violations: string[] = [];
+	if (!policy || typeof policy !== "object") {
+		return { valid: false, violations: ["TaskGuardPolicy must be an object"] };
+	}
+
+	if (policy.scopeLock !== undefined) {
+		const { allowedPaths, cwd } = policy.scopeLock;
+		if (!Array.isArray(allowedPaths) || allowedPaths.length === 0) {
+			violations.push("scopeLock.allowedPaths must be a non-empty array");
+		} else {
+			for (let i = 0; i < allowedPaths.length; i++) {
+				const entry = allowedPaths[i];
+				if (typeof entry !== "string" || entry.trim().length === 0 || entry.includes("\0")) {
+					violations.push(`scopeLock.allowedPaths[${i}] must be a non-empty string without null bytes`);
+				}
+			}
+		}
+		if (cwd !== undefined && (typeof cwd !== "string" || cwd.trim().length === 0 || cwd.includes("\0"))) {
+			violations.push("scopeLock.cwd must be a non-empty string without null bytes");
+		}
+	}
+
+	if (policy.diffBudget !== undefined) {
+		const { maxAddedLines, maxChangedLines, maxFiles } = policy.diffBudget;
+		const checks: [string, number | undefined][] = [
+			["maxAddedLines", maxAddedLines],
+			["maxChangedLines", maxChangedLines],
+			["maxFiles", maxFiles],
+		];
+		for (const [name, value] of checks) {
+			if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+				violations.push(`diffBudget.${name} must be a non-negative finite number`);
+			}
+		}
+	}
+
+	return { valid: violations.length === 0, violations };
+}
+
+export function createTaskGuardPolicy(policy: TaskGuardPolicy): TaskGuardPolicy {
+	const res = validateTaskGuardPolicy(policy);
+	if (!res.valid) {
+		throw new PolicyBoundaryViolation(`Invalid TaskGuardPolicy: ${res.violations.join("; ")}`, res.violations);
+	}
+	return Object.freeze({
+		...(policy.scopeLock
+			? {
+					scopeLock: Object.freeze({
+						...policy.scopeLock,
+						allowedPaths: Object.freeze([...policy.scopeLock.allowedPaths]),
+					}),
+				}
+			: {}),
+		...(policy.diffBudget
+			? {
+					diffBudget: Object.freeze({ ...policy.diffBudget }),
+				}
+			: {}),
+	});
 }

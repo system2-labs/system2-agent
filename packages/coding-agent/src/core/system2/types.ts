@@ -85,3 +85,20 @@ export interface System2VerifyResult {
 	error?: string;
 	details?: string;
 }
+
+export interface TaskScopeLock {
+	allowedPaths: readonly string[];
+	cwd?: string;
+	allowNewFiles?: boolean;
+}
+
+export interface DiffBudget {
+	maxAddedLines?: number;
+	maxChangedLines?: number;
+	maxFiles?: number;
+}
+
+export interface TaskGuardPolicy {
+	scopeLock?: TaskScopeLock;
+	diffBudget?: DiffBudget;
+}
