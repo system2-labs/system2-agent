@@ -14,9 +14,11 @@ import { createTestResourceLoader } from "./utilities.ts";
 describe("AgentSession System 2 regression interception and rollback", () => {
 	let session: AgentSession;
 	let dir: string;
+	let trajectoriesDir: string;
 
 	beforeEach(async () => {
 		dir = mkdtempSync(join(tmpdir(), "s2-sess-test-"));
+		trajectoriesDir = mkdtempSync(join(tmpdir(), "s2-sess-traj-"));
 		execSync("git init -b main && git config user.name T && git config user.email t@t.com", { cwd: dir });
 		writeFileSync(join(dir, "calc.ts"), "export const add = (a: number, b: number) => a + b;\n");
 		execSync("git add calc.ts && git commit -m c", { cwd: dir });
@@ -39,12 +41,14 @@ describe("AgentSession System 2 regression interception and rollback", () => {
 			cwd: dir,
 			modelRuntime: getModelRuntime(await createModelRegistry(AuthStorage.inMemory(), dir)),
 			resourceLoader: createTestResourceLoader(),
+			system2TrajectoriesDir: trajectoriesDir,
 		});
 	});
 
 	afterEach(() => {
 		session?.dispose();
 		if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		if (existsSync(trajectoriesDir)) rmSync(trajectoriesDir, { recursive: true, force: true });
 	});
 
 	it("intercepts test assertion failure, triggers rollback engine, and restores pre-regression state", async () => {

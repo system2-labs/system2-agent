@@ -149,7 +149,12 @@ import {
 } from "./system-prompt.ts";
 import {
 	captureSnapshot,
+	ingestLogChunk,
+	type MatchedError,
+	queryTelemetrySentinel,
+	RollingLogBuffer,
 	rollbackSnapshot,
+	System2TrajectoryLogger,
 	verifyPostExecution,
 	verifyToolCall,
 	type WorktreeSnapshot,
@@ -318,6 +323,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Optional override directory for System 2 JSONL trajectory logs. */
+	system2TrajectoriesDir?: string;
 }
 
 export interface ExtensionBindings {
@@ -460,6 +467,12 @@ export class AgentSession {
 	private _lastKnownGoodSnapshot: WorktreeSnapshot | null = null;
 	private readonly _activeToolArgs = new Map<string, Record<string, any>>();
 	private _activeToolInfo: { toolName: string; summary?: string; persona?: string } | null = null;
+	private readonly _system2Sentinel = new RollingLogBuffer();
+	private readonly _system2TrajectoryLogger: System2TrajectoryLogger;
+	private _lastSystem2Feedback: string | null = null;
+	private _lastMutatingToolCall: { tool: string; args: Record<string, unknown> } | null = null;
+	private readonly _ingestedBashOutputs = new Map<string, string>();
+	private readonly _bashSentinelStartLine = new Map<string, number>();
 
 	public getActiveTool(): { toolName: string; summary?: string; persona?: string } | null {
 		return this._activeToolInfo;
@@ -555,6 +568,10 @@ export class AgentSession {
 		this._excludedTools = config.excludedToolNames ? createToolNameMatcher(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._system2TrajectoryLogger = new System2TrajectoryLogger({
+			dir: config.system2TrajectoriesDir,
+			sessionId: this.sessionManager.getSessionId(),
+		});
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -1447,15 +1464,38 @@ export class AgentSession {
 			this._activeToolInfo = { toolName: event.toolName, summary, persona };
 
 			if (this.model?.provider === "system2") {
-				const check = await verifyToolCall(event.toolName, event.args as Record<string, any>);
+				const toolArgs: Record<string, unknown> =
+					event.args && typeof event.args === "object" ? (event.args as Record<string, unknown>) : {};
+				const check = await verifyToolCall(event.toolName, toolArgs);
 				if (!check.allowed) {
+					const reason = check.reason || "Tool call blocked by System 2 Guard";
+					const context = this._buildSystem2Context(toolArgs);
+					const feedback = this._formatSystem2Feedback({
+						prefix: "[System 2 Guard]",
+						reason,
+						tool: event.toolName,
+						target: this._extractToolTarget(toolArgs),
+					});
+					this._emitSystem2Feedback(feedback, { stage: "pre_guard", tool: event.toolName, reason });
+					this._system2TrajectoryLogger.recordRejection({
+						stage: "pre_guard",
+						context,
+						rejected_call: { tool: event.toolName, args: toolArgs },
+						guard_reason: reason,
+					});
 					throw new Error(`[System 2 Guard] Blocked execution: ${check.reason}`);
 				}
 				if (!this._activeSystem2Snapshot && ["write", "edit", "write_file", "bash"].includes(event.toolName)) {
 					this._activeSystem2Snapshot = await captureSnapshot(this.sessionManager.getCwd());
 				}
 				if (event.args && typeof event.args === "object") {
-					this._activeToolArgs.set(event.toolCallId, event.args as Record<string, any>);
+					this._activeToolArgs.set(event.toolCallId, toolArgs);
+				}
+				if (["write", "edit", "write_file"].includes(event.toolName)) {
+					this._lastMutatingToolCall = { tool: event.toolName, args: toolArgs };
+				}
+				if (event.toolName === "bash") {
+					this._bashSentinelStartLine.set(event.toolCallId, this._system2Sentinel.getLineCount());
 				}
 			}
 			const extensionEvent: ToolExecutionStartEvent = {
@@ -1466,6 +1506,10 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_update") {
+			if (this.model?.provider === "system2" && event.toolName === "bash") {
+				const chunk = this._extractToolResultText(event.partialResult);
+				this._ingestBashSentinelChunk(event.toolCallId, chunk);
+			}
 			const extensionEvent: ToolExecutionUpdateEvent = {
 				type: "tool_execution_update",
 				toolCallId: event.toolCallId,
@@ -1482,20 +1526,71 @@ export class AgentSession {
 				if (["write", "edit", "write_file"].includes(event.toolName)) {
 					const postCheck = await verifyPostExecution(event.toolName, args);
 					if (!postCheck.allowed) {
-						if (this._activeSystem2Snapshot) await rollbackSnapshot(this._activeSystem2Snapshot);
+						const rb = this._activeSystem2Snapshot ? await rollbackSnapshot(this._activeSystem2Snapshot) : null;
 						this._activeSystem2Snapshot = null;
+						this._lastMutatingToolCall = null;
+						const reason = postCheck.reason || "Post-execution verification failed";
+						const context = this._buildSystem2Context(args);
+						const feedback = this._formatSystem2Feedback({
+							prefix: "[System 2 Rollback]",
+							reason,
+							tool: event.toolName,
+							target: this._extractToolTarget(args),
+							latencyMs: rb?.latencyMs,
+						});
+						this._emitSystem2Feedback(feedback, {
+							stage: "post_guard",
+							tool: event.toolName,
+							reason,
+							latencyMs: rb?.latencyMs,
+						});
+						this._system2TrajectoryLogger.recordRejection({
+							stage: "post_guard",
+							context,
+							rejected_call: { tool: event.toolName, args: args ?? {} },
+							guard_reason: reason,
+							rollback_latency_ms: rb?.latencyMs,
+						});
 						throw new Error(`[System 2 Guard] Post-execution verification failed: ${postCheck.reason}`);
+					}
+					const pending = this._system2TrajectoryLogger.getPendingRejection();
+					if (pending && (pending.stage === "pre_guard" || pending.stage === "post_guard")) {
+						this._system2TrajectoryLogger.recordPassingFix(
+							{
+								tool: event.toolName,
+								args: args ?? {},
+								summary: "Post-execution verification passed",
+							},
+							this._buildSystem2Context(args),
+						);
 					}
 				}
 				if (event.toolName === "bash") {
-					const res = event.result as any;
-					const output = Array.isArray(res?.content)
-						? res.content.map((c: any) => c.text || "").join("\n")
-						: (res?.content ?? "");
-					if (output.includes("failed") || output.includes("FAILED") || output.includes("AssertionError")) {
+					const output = this._extractToolResultText(event.result);
+					this._ingestBashSentinelChunk(event.toolCallId, output);
+					this._ingestedBashOutputs.delete(event.toolCallId);
+
+					const startLine = this._bashSentinelStartLine.get(event.toolCallId) ?? 0;
+					this._bashSentinelStartLine.delete(event.toolCallId);
+					const sessionSentinel = this._system2Sentinel.queryTelemetrySentinel();
+					const callMatchedErrors =
+						sessionSentinel.totalLines > 0
+							? sessionSentinel.matchedErrors.filter((err) => err.line > startLine)
+							: queryTelemetrySentinel().matchedErrors;
+
+					const hasFailureSignal =
+						event.isError ||
+						callMatchedErrors.length > 0 ||
+						output.includes("failed") ||
+						output.includes("FAILED") ||
+						output.includes("AssertionError");
+
+					if (hasFailureSignal) {
+						let rbLatencyMs: number | undefined;
 						if (this._activeSystem2Snapshot) {
 							const rb = await rollbackSnapshot(this._activeSystem2Snapshot);
 							this._activeSystem2Snapshot = null;
+							rbLatencyMs = rb.latencyMs;
 							if (this.state) {
 								(this.state as any).deliberation = {
 									status: "fail",
@@ -1503,6 +1598,37 @@ export class AgentSession {
 								};
 							}
 						}
+						const rejectedCall = this._lastMutatingToolCall ?? { tool: "bash", args: args ?? {} };
+						this._lastMutatingToolCall = null;
+						const context = this._buildSystem2Context(rejectedCall.args);
+						const topErrors = callMatchedErrors.slice(0, 5);
+						const reason =
+							topErrors.length > 0
+								? `Sentinel detected ${callMatchedErrors.length} error${callMatchedErrors.length === 1 ? "" : "s"}: ${topErrors[0].text}`
+								: "Bash verification failed";
+						const feedback = this._formatSystem2Feedback({
+							prefix: "[System 2 Rollback]",
+							reason,
+							tool: rejectedCall.tool,
+							target: this._extractToolTarget(rejectedCall.args),
+							latencyMs: rbLatencyMs,
+							sentinelErrors: topErrors,
+						});
+						this._emitSystem2Feedback(feedback, {
+							stage: "rollback",
+							tool: rejectedCall.tool,
+							reason,
+							latencyMs: rbLatencyMs,
+							sentinelErrors: topErrors,
+						});
+						this._system2TrajectoryLogger.recordRejection({
+							stage: "rollback",
+							context,
+							rejected_call: rejectedCall,
+							guard_reason: reason,
+							rollback_latency_ms: rbLatencyMs,
+							sentinel_errors: topErrors,
+						});
 					} else if (
 						output.includes("passed in") ||
 						output.includes("passed,") ||
@@ -1516,6 +1642,36 @@ export class AgentSession {
 								status: "pass",
 								summary: "Invariant: Pass",
 							};
+						}
+						if (this._system2TrajectoryLogger.hasPendingRejection()) {
+							const passingFix = this._lastMutatingToolCall
+								? {
+										tool: this._lastMutatingToolCall.tool,
+										args: this._lastMutatingToolCall.args,
+										summary: "Verified by passing bash test",
+									}
+								: {
+										tool: "bash",
+										args: args ?? {},
+										summary: "Verified by passing bash test",
+									};
+							this._system2TrajectoryLogger.recordPassingFix(
+								passingFix,
+								this._buildSystem2Context(passingFix.args),
+							);
+						}
+						this._lastMutatingToolCall = null;
+					} else {
+						const pending = this._system2TrajectoryLogger.getPendingRejection();
+						if (pending && pending.stage === "pre_guard" && pending.rejected_call.tool === "bash") {
+							this._system2TrajectoryLogger.recordPassingFix(
+								{
+									tool: "bash",
+									args: args ?? {},
+									summary: "Safe bash command succeeded",
+								},
+								this._buildSystem2Context(args),
+							);
 						}
 					}
 				}
@@ -1652,6 +1808,137 @@ export class AgentSession {
 	}
 	get lastKnownGoodSnapshot(): WorktreeSnapshot | null {
 		return this._lastKnownGoodSnapshot;
+	}
+	get lastSystem2Feedback(): string | null {
+		return this._lastSystem2Feedback;
+	}
+	get system2Sentinel(): RollingLogBuffer {
+		return this._system2Sentinel;
+	}
+	get system2TrajectoryLogger(): System2TrajectoryLogger {
+		return this._system2TrajectoryLogger;
+	}
+
+	private _extractToolResultText(result: unknown): string {
+		if (typeof result === "string") return result;
+		if (!result || typeof result !== "object") return "";
+		const content = (result as { content?: unknown }).content;
+		if (typeof content === "string") return content;
+		if (Array.isArray(content)) {
+			return content
+				.map((item) => {
+					if (typeof item === "string") return item;
+					if (item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string") {
+						return (item as { text: string }).text;
+					}
+					return "";
+				})
+				.filter(Boolean)
+				.join("\n");
+		}
+		return "";
+	}
+
+	/**
+	 * Ingest bash output into both the per-session sentinel buffer (for session
+	 * isolation) and the default sentinel buffer (so module-level queries work).
+	 * Deduplicates cumulative streaming chunks per toolCallId.
+	 */
+	private _ingestBashSentinelChunk(toolCallId: string, text: string): void {
+		if (!text) return;
+		const prev = this._ingestedBashOutputs.get(toolCallId) ?? "";
+		let delta = text;
+		if (prev && text.startsWith(prev)) {
+			delta = text.slice(prev.length);
+			this._ingestedBashOutputs.set(toolCallId, text);
+		} else {
+			const combined = prev ? (prev.endsWith("\n") ? `${prev}${text}` : `${prev}\n${text}`) : text;
+			this._ingestedBashOutputs.set(toolCallId, combined);
+		}
+		if (!delta) return;
+		this._system2Sentinel.ingestLogChunk(delta);
+		ingestLogChunk(delta);
+	}
+
+	private _extractToolTarget(args?: Record<string, unknown>): string | undefined {
+		if (!args) return undefined;
+		if (typeof args.path === "string" && args.path) return args.path;
+		if (typeof args.filePath === "string" && args.filePath) return args.filePath;
+		if (typeof args.file_path === "string" && args.file_path) return args.file_path;
+		if (typeof args.command === "string" && args.command) return args.command.trim().slice(0, 80);
+		if (typeof args.cmd === "string" && args.cmd) return args.cmd.trim().slice(0, 80);
+		return undefined;
+	}
+
+	private _buildSystem2Context(args?: Record<string, unknown>): string {
+		const parts: string[] = [];
+		const messages = this.agent.state.messages;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const msg = messages[i];
+			if (msg.role !== "user") continue;
+			const raw =
+				typeof msg.content === "string"
+					? msg.content
+					: Array.isArray(msg.content)
+						? msg.content
+								.map((c) => (c.type === "text" ? c.text : ""))
+								.filter(Boolean)
+								.join(" ")
+						: "";
+			const trimmed = raw.trim().replace(/\s+/g, " ").slice(0, 200);
+			if (trimmed) {
+				parts.push(`prompt: ${trimmed}`);
+				break;
+			}
+		}
+		const target = this._extractToolTarget(args);
+		if (target) parts.push(`target: ${target}`);
+		const cwd = this.sessionManager.getCwd() || this._cwd;
+		if (cwd) parts.push(`cwd: ${cwd}`);
+		return parts.join(" | ");
+	}
+
+	private _formatSystem2Feedback(options: {
+		prefix: "[System 2 Guard]" | "[System 2 Rollback]";
+		reason: string;
+		tool: string;
+		target?: string;
+		latencyMs?: number;
+		sentinelErrors?: MatchedError[];
+	}): string {
+		const lines: string[] = [];
+		const targetPart = options.target ? ` (${options.target})` : "";
+		const latencyPart = options.latencyMs !== undefined ? ` | latency: ${options.latencyMs}ms` : "";
+		lines.push(`${options.prefix} tool=${options.tool}${targetPart}${latencyPart}`);
+		lines.push(`Reason: ${options.reason}`);
+		if (options.sentinelErrors && options.sentinelErrors.length > 0) {
+			lines.push("Sentinel errors:");
+			for (const err of options.sentinelErrors.slice(0, 5)) {
+				lines.push(`  L${err.line}: ${err.text}`);
+			}
+		}
+		return lines.join("\n");
+	}
+
+	/**
+	 * Write System 2 guard/rollback feedback back into the agent's context so
+	 * the next turn sees the exact trigger reason and sentinel error excerpts.
+	 */
+	private _emitSystem2Feedback(text: string, details?: Record<string, unknown>): void {
+		this._lastSystem2Feedback = text;
+		const appMessage: CustomMessage = {
+			role: "custom",
+			customType: "system2-feedback",
+			content: text,
+			display: true,
+			details,
+			timestamp: Date.now(),
+		};
+		if (this.isStreaming) {
+			this.agent.steer(appMessage);
+		} else {
+			this._appendCustomMessage(appMessage);
+		}
 	}
 
 	/**

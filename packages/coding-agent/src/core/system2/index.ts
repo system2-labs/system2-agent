@@ -4,6 +4,7 @@ export * from "./footer.ts";
 export * from "./policy.ts";
 export * from "./profiles.ts";
 export * from "./sentinel.ts";
+export * from "./trajectory.ts";
 export * from "./types.ts";
 export * from "./verifier.ts";
 export * from "./virtual-model.ts";
