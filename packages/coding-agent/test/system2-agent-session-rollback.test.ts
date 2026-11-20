@@ -144,6 +144,11 @@ describe("AgentSession System 2 regression interception and rollback", () => {
 
 		expect(existsSync(join(dir, "notes.txt"))).toBe(true);
 		expect(readFileSync(join(dir, "notes.txt"), "utf-8")).toBe("keep me\n");
+		// No mutation: no rollback feedback, no feedback message, no snapshot, no trajectory record.
+		expect(session.lastSystem2Feedback).toBeNull();
+		expect(session.messages.some((m) => m.role === "custom" && m.customType === "system2-feedback")).toBe(false);
+		expect(session.activeSystem2Snapshot).toBeNull();
+		expect(existsSync(session.system2TrajectoryLogger.filePath)).toBe(false);
 	});
 
 	it("does not roll back a failing read-only bash in git repo with no prior mutation", async () => {
@@ -171,6 +176,12 @@ describe("AgentSession System 2 regression interception and rollback", () => {
 
 		expect(existsSync(join(dir, "grep.log"))).toBe(true);
 		expect(execSync("git status --porcelain", { cwd: dir }).toString().trim()).toBe("");
+		// Clean git repo + no prior mutation: no rollback feedback, no feedback message,
+		// no trajectory record, and the read-only command's worktree stays untouched.
+		expect(session.lastSystem2Feedback).toBeNull();
+		expect(session.messages.some((m) => m.role === "custom" && m.customType === "system2-feedback")).toBe(false);
+		expect(session.activeSystem2Snapshot).toBeNull();
+		expect(existsSync(session.system2TrajectoryLogger.filePath)).toBe(false);
 	});
 
 	it("still rolls back after edit -> failing test and restores files cleanly", async () => {

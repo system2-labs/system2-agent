@@ -1657,7 +1657,13 @@ export class AgentSession {
 						const mutationOccurred =
 							this._activeSystem2Snapshot !== null &&
 							(this._lastMutatingToolCall !== null || hasSnapshotChanges(this._activeSystem2Snapshot));
-						if (mutationOccurred) {
+						// No mutation means nothing to undo: a false [System 2 Rollback] feedback would teach
+						// the agent that a harmless command broke its own work, and a stage:"rollback" record
+						// would poison the learning trajectory with an incident that never happened.
+						if (!mutationOccurred) {
+							this._activeSystem2Snapshot = null;
+							this._lastMutatingToolCall = null;
+						} else {
 							try {
 								const rb = await rollbackSnapshot(this._activeSystem2Snapshot!);
 								rbLatencyMs = rb.latencyMs;
@@ -1673,45 +1679,45 @@ export class AgentSession {
 									{ stage: "rollback_error", tool: "bash", reason },
 								);
 							}
+							this._activeSystem2Snapshot = null;
+							if (rbLatencyMs !== undefined && this.state) {
+								(this.state as any).deliberation = {
+									status: "fail",
+									summary: `Rollback triggered (${rbLatencyMs}ms)`,
+								};
+							}
+							const rejectedCall = this._lastMutatingToolCall ?? { tool: "bash", args: args ?? {} };
+							this._lastMutatingToolCall = null;
+							const context = this._buildSystem2Context(rejectedCall.args);
+							const topErrors = actionableErrors.slice(0, 5);
+							const reason =
+								topErrors.length > 0
+									? `Sentinel detected ${actionableErrors.length} error${actionableErrors.length === 1 ? "" : "s"}: ${topErrors[0].text}`
+									: "Bash verification failed";
+							const feedback = this._formatSystem2Feedback({
+								prefix: "[System 2 Rollback]",
+								reason,
+								tool: rejectedCall.tool,
+								target: this._extractToolTarget(rejectedCall.args),
+								latencyMs: rbLatencyMs,
+								sentinelErrors: topErrors,
+							});
+							this._emitSystem2Feedback(feedback, {
+								stage: "rollback",
+								tool: rejectedCall.tool,
+								reason,
+								latencyMs: rbLatencyMs,
+								sentinelErrors: topErrors,
+							});
+							this._system2TrajectoryLogger.recordRejection({
+								stage: "rollback",
+								context,
+								rejected_call: rejectedCall,
+								guard_reason: reason,
+								rollback_latency_ms: rbLatencyMs,
+								sentinel_errors: topErrors,
+							});
 						}
-						this._activeSystem2Snapshot = null;
-						if (rbLatencyMs !== undefined && this.state) {
-							(this.state as any).deliberation = {
-								status: "fail",
-								summary: `Rollback triggered (${rbLatencyMs}ms)`,
-							};
-						}
-						const rejectedCall = this._lastMutatingToolCall ?? { tool: "bash", args: args ?? {} };
-						this._lastMutatingToolCall = null;
-						const context = this._buildSystem2Context(rejectedCall.args);
-						const topErrors = actionableErrors.slice(0, 5);
-						const reason =
-							topErrors.length > 0
-								? `Sentinel detected ${actionableErrors.length} error${actionableErrors.length === 1 ? "" : "s"}: ${topErrors[0].text}`
-								: "Bash verification failed";
-						const feedback = this._formatSystem2Feedback({
-							prefix: "[System 2 Rollback]",
-							reason,
-							tool: rejectedCall.tool,
-							target: this._extractToolTarget(rejectedCall.args),
-							latencyMs: rbLatencyMs,
-							sentinelErrors: topErrors,
-						});
-						this._emitSystem2Feedback(feedback, {
-							stage: "rollback",
-							tool: rejectedCall.tool,
-							reason,
-							latencyMs: rbLatencyMs,
-							sentinelErrors: topErrors,
-						});
-						this._system2TrajectoryLogger.recordRejection({
-							stage: "rollback",
-							context,
-							rejected_call: rejectedCall,
-							guard_reason: reason,
-							rollback_latency_ms: rbLatencyMs,
-							sentinel_errors: topErrors,
-						});
 					} else if (
 						output.includes("passed in") ||
 						output.includes("passed,") ||
