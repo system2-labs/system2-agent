@@ -52,13 +52,27 @@ export function inspectExecutionConsequences(
 		summary,
 		latencyMs: elapsed(t0),
 	});
-	if (!base) return empty("No git baseline in snapshot; consequences not inspected.");
+	if (snapshot.isGitRepo === false || !base)
+		return empty("Snapshot is not a git repository or has no baseline; consequences not inspected.");
 
-	const realCwd = realpathSync(snapshot.cwd);
+	let realCwd: string;
+	try {
+		realCwd = realpathSync(snapshot.cwd);
+	} catch {
+		return empty("Snapshot cwd no longer exists; consequences not inspected.");
+	}
 	// Walking up for `.git` avoids a `git rev-parse` spawn (about a third of the latency budget). A `.git` file
 	// (linked worktree) counts too. Paths from git below are relative to this root.
 	const root = findRepoRoot(realCwd);
 	if (!root) return empty("Not a git repository; consequences not inspected.");
+
+	// Normalize root via realpathSync to handle symlinks like macOS `/var` -> `/private/var`
+	let resolvedRoot: string;
+	try {
+		resolvedRoot = realpathSync(root);
+	} catch {
+		resolvedRoot = root;
+	}
 
 	const modified: string[] = [];
 	const added: string[] = [];
@@ -81,14 +95,18 @@ export function inspectExecutionConsequences(
 	}
 
 	// Untracked files are invisible to `git diff`; new ones are anything not already untracked at snapshot time.
+	// `snapshot.untrackedFiles` may contain cwd-relative paths including sibling paths like `../../docs/scratch.txt`
+	// (from repo-root enumeration) and raw UTF-8 non-ASCII filenames like `caf\u00e9.txt`. The priorUntracked Set
+	// resolves both sibling `../` paths and UTF-8 filenames to canonical absolute paths matching resolve(resolvedRoot, file)
+	// when `git status --porcelain -z --untracked-files=all` runs with `-c core.quotepath=false`.
 	const priorUntracked = new Set(snapshot.untrackedFiles.map((file) => resolve(realCwd, file)));
 	const status = git(snapshot.cwd, ["status", "--porcelain", "-z", "--untracked-files=all"]) ?? "";
 	for (const entry of status.split("\0")) {
 		if (!entry.startsWith("?? ")) continue;
 		const file = entry.slice(3);
-		if (priorUntracked.has(resolve(root, file))) continue;
+		if (priorUntracked.has(resolve(resolvedRoot, file))) continue;
 		added.push(file);
-		lineCounts.set(file, { added: countFileLines(resolve(root, file)), deleted: 0 });
+		lineCounts.set(file, { added: countFileLines(resolve(resolvedRoot, file)), deleted: 0 });
 	}
 
 	let totalAdded = 0;
@@ -98,7 +116,7 @@ export function inspectExecutionConsequences(
 		totalDeleted += counts.deleted;
 	}
 
-	const toRel = (file: string) => relative(realCwd, resolve(root, file));
+	const toRel = (file: string) => relative(realCwd, resolve(resolvedRoot, file));
 	const report: ExecutionConsequenceReport = {
 		cwd: snapshot.cwd,
 		modifiedFiles: modified.map(toRel),
@@ -120,7 +138,7 @@ export function inspectExecutionConsequences(
 		const deleteLock = { ...lock, allowNewFiles: undefined };
 		const outside = new Set<string>();
 		for (const file of [...modified, ...added, ...deleted]) {
-			const abs = resolve(root, file);
+			const abs = resolve(resolvedRoot, file);
 			const isDeleted = deleted.includes(file);
 			const violation = checkScopeLock(abs, isDeleted ? deleteLock : lock);
 			// checkScopeLock only sees pre-existing files, so a new file under allowNewFiles=false is checked here.

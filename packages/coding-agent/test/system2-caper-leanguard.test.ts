@@ -534,4 +534,74 @@ describe("Caper consequence inspection", () => {
 		};
 		for (const v of p95s) expect(v).toBeLessThanOrEqual(40);
 	});
+
+	it("deleted cwd safety: inspectExecutionConsequences returns empty report without throwing when snapshot.cwd is removed", async () => {
+		const snap = await captureSnapshot(repo);
+		rmSync(repo, { recursive: true, force: true });
+		const report = inspectExecutionConsequences(snap, policy);
+		expect(report.modifiedFiles).toEqual([]);
+		expect(report.addedFiles).toEqual([]);
+		expect(report.deletedFiles).toEqual([]);
+		expect(report.totalAddedLines).toBe(0);
+		expect(report.totalDeletedLines).toBe(0);
+		expect(report.outOfScopeFiles).toEqual([]);
+		expect(report.deletedTrackedFiles).toEqual([]);
+		expect(report.summary).toBe("Snapshot cwd no longer exists; consequences not inspected.");
+	});
+
+	it("non-git directory with guardPolicy: inspectExecutionConsequences on non-git snapshot returns empty report and evaluateConsequencePolicy allows it", async () => {
+		const nonGitDir = join(root, "non-git-repo");
+		mkdirSync(nonGitDir, { recursive: true });
+		const nonGitSnap = {
+			cwd: nonGitDir,
+			isGitRepo: false,
+			headSha: "",
+			stashSha: "",
+			timestamp: Date.now(),
+			untrackedFiles: [],
+		};
+		const report = inspectExecutionConsequences(nonGitSnap, policy);
+		expect(report.modifiedFiles).toEqual([]);
+		expect(report.addedFiles).toEqual([]);
+		expect(report.deletedFiles).toEqual([]);
+		expect(report.totalAddedLines).toBe(0);
+		expect(report.totalDeletedLines).toBe(0);
+		expect(report.outOfScopeFiles).toEqual([]);
+		expect(report.deletedTrackedFiles).toEqual([]);
+		expect(report.summary).toBe("Snapshot is not a git repository or has no baseline; consequences not inspected.");
+		const verdict = evaluateConsequencePolicy(report, policy);
+		expect(verdict.allowed).toBe(true);
+		expect(verdict.decision).toBe("allow");
+	});
+
+	it("subdirectory cwd with pre-existing sibling untracked file + non-ASCII filename: read-only execution reports addedFiles [], outOfScopeFiles [] and evaluateConsequencePolicy allows it", async () => {
+		const appDir = join(repo, "packages", "app");
+		mkdirSync(appDir, { recursive: true });
+		const docsDir = join(repo, "docs");
+		mkdirSync(docsDir, { recursive: true });
+		writeFileSync(join(docsDir, "scratch.txt"), "scratch\n");
+		const cafeFile = join(appDir, "café.txt");
+		writeFileSync(cafeFile, "caf\u00e9 content\n");
+		const snap = await captureSnapshot(repo);
+		// Mock snapshot whose untrackedFiles contains cwd-relative paths including sibling path and non-ASCII filename
+		const mockSnap = {
+			...snap,
+			cwd: appDir,
+			untrackedFiles: ["../../docs/scratch.txt", "café.txt"],
+		};
+		const report = inspectExecutionConsequences(mockSnap, policy);
+		expect(report.addedFiles).toEqual([]);
+		expect(report.outOfScopeFiles).toEqual([]);
+		const verdict = evaluateConsequencePolicy(report, policy);
+		expect(verdict.allowed).toBe(true);
+
+		// Write a NEW file docs/escape.txt outside scope and assert inspectExecutionConsequences catches it
+		writeFileSync(join(docsDir, "escape.txt"), "escape\n");
+		const reportWithEscape = inspectExecutionConsequences(mockSnap, policy);
+		expect(reportWithEscape.addedFiles).toContain("../../docs/escape.txt");
+		expect(reportWithEscape.outOfScopeFiles).toContain("../../docs/escape.txt");
+		const escapeVerdict = evaluateConsequencePolicy(reportWithEscape, policy);
+		expect(escapeVerdict.allowed).toBe(false);
+		expect(escapeVerdict.code).toBe("CONSEQUENCE_SCOPE_VIOLATION");
+	});
 });
