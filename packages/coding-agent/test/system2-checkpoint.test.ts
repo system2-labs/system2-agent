@@ -1,7 +1,8 @@
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { captureSnapshot, hasSnapshotChanges, rollbackSnapshot } from "../src/core/system2/checkpoint.ts";
 
@@ -86,6 +87,30 @@ describe("system2 checkpoint engine", () => {
 			// No git clean/reset ran: both files untouched.
 			expect(readFileSync(join(plain, "a.txt"), "utf-8")).toBe("hello\n");
 			expect(readFileSync(join(plain, "b.txt"), "utf-8")).toBe("new\n");
+		} finally {
+			rmSync(plain, { recursive: true, force: true });
+		}
+	});
+
+	it("non-git dir: capture/hasChanges/rollback run with zero stderr", () => {
+		const plain = mkdtempSync(join(tmpdir(), "s2-cp-stderr-"));
+		try {
+			writeFileSync(join(plain, "a.txt"), "hello\n");
+			const script = `
+import { captureSnapshot, hasSnapshotChanges, rollbackSnapshot } from "${
+				pathToFileURL(resolve(import.meta.dirname, "../src/core/system2/checkpoint.ts")).href
+			}";
+import { writeFileSync } from "node:fs";
+const snap = await captureSnapshot(${JSON.stringify(plain)});
+hasSnapshotChanges(snap);
+writeFileSync(${JSON.stringify(join(plain, "b.txt"))}, "new\\n");
+await rollbackSnapshot(snap);
+`;
+			// spawnSync so git's stderr (if the piped-stdio guard regressed) is captured on
+			// the child instead of leaking to the test runner's own stderr.
+			const proc = spawnSync(process.execPath, ["-e", script], { encoding: "utf-8" });
+			expect(proc.status).toBe(0);
+			expect(proc.stderr).toBe("");
 		} finally {
 			rmSync(plain, { recursive: true, force: true });
 		}

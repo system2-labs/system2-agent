@@ -19,9 +19,17 @@ export interface RollbackResult {
 
 // Trust boundary: callers can construct snapshot objects manually (tests, old serialized data),
 // so a missing isGitRepo field must fall back to an actual git check on the snapshotted cwd.
+// stdio is piped (not inherited) so a `fatal: not a git repository` message from git in a
+// non-worktree directory does not leak into the TUI's stderr.
 function isGitWorktree(cwd: string): boolean {
 	try {
-		return execSync("git rev-parse --is-inside-work-tree", { cwd, encoding: "utf-8" }).trim() === "true";
+		return (
+			execSync("git rev-parse --is-inside-work-tree", {
+				cwd,
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+			}).trim() === "true"
+		);
 	} catch {
 		return false;
 	}
@@ -113,7 +121,12 @@ export async function rollbackSnapshot(snapshot: WorktreeSnapshot): Promise<Roll
 	} else {
 		const init = new Set(snapshot.untrackedFiles);
 		try {
-			const files = execSync("git ls-files --others --exclude-standard --directory", { cwd, encoding: "utf-8" })
+			// Piped stdio: same stderr-leak protection as isGitWorktree.
+			const files = execSync("git ls-files --others --exclude-standard --directory", {
+				cwd,
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+			})
 				.trim()
 				.split("\n")
 				.filter(Boolean);
