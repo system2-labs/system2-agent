@@ -168,42 +168,114 @@ function pickTargetPhysicalModel(
 	return previousModel || available[0];
 }
 
+export type Regime2ModelTier = "ultra_low_bit" | "edge_tiny_4bit" | "mid_local" | "flagship_local" | "cloud_frontier";
+
+const ULTRA_LOW_BIT_PATTERN = /(?:iq[123](?:_[a-z0-9]+)?|q2_k(?:_[a-z0-9]+)?|q3_k(?:_[a-z0-9]+)?|[23]-?bit|smoll)/i;
+const LOCAL_MODEL_HINT_PATTERN = /(?:gguf|mlx|yuzu|splash|heretic|abliter|q[4568]_[0k]|4-?bit|8-?bit|mxfp8|ud-)/i;
+const PARAM_SIZE_PATTERN = /(?:^|[-_/@\s:])e?(\d+(?:\.\d+)?)b(?=$|[-_/@\s:.])/gi;
+const LOCAL_PROVIDERS = new Set(["lmstudio", "mlx", "ollama", "local", "vllm-local"]);
+
 /**
- * Determine optimal thinking level based on track, model characteristics, and calibrated confidence.
- * Implements System 2 "Regime 2 Protocol":
- * For small/quantized local models (smoll, iq3_xxs, gemma-12b), internal <think> loops fail
- * due to quantization noise (0% pass rate in tests). Turning thinking "off" and relying on
- * System 2 external verification rescues pass rate to 100% and speeds up execution 8.8x!
+ * Classify a physical target model into its empirically calibrated Regime 2 v2 tier
+ * (see `~/system2-eval-reports/reports/REGIME2_V2_4096_AND_TREEISING_EVAL.md`):
+ * - `ultra_low_bit`: 2-bit / 3-bit models (smoll, iq2, q2_k, iq3) -> hard-kill thinking (`off`).
+ * - `edge_tiny_4bit`: <=4.5B local 4-bit models (0.8B, 1.2B, 2B, e2b, 4B) -> `off` by default.
+ * - `mid_local`: 7B-14B local 4-bit models (qwen3.5-9b, gemma-4-12b) -> HDM VoT selective thinking.
+ * - `flagship_local`: >=24B local 4-bit / speculative models (qwen3.8-27b-splash) -> thinking ON.
+ * - `cloud_frontier`: Cloud / unquantized frontier models -> track + confidence + VoT policy.
  */
-function resolveThinkingLevel(
-	targetModel: Model<Api>,
+export function classifyRegime2ModelTier(targetModel: Pick<Model<Api>, "id" | "provider">): Regime2ModelTier {
+	const modelId = targetModel.id.toLowerCase();
+	const provider = targetModel.provider.toLowerCase();
+
+	if (ULTRA_LOW_BIT_PATTERN.test(modelId)) {
+		return "ultra_low_bit";
+	}
+
+	const isLocal = LOCAL_PROVIDERS.has(provider) || LOCAL_MODEL_HINT_PATTERN.test(modelId);
+	if (!isLocal) {
+		return "cloud_frontier";
+	}
+
+	let maxBillions: number | null = null;
+	for (const match of modelId.matchAll(PARAM_SIZE_PATTERN)) {
+		const parsed = Number.parseFloat(match[1] ?? "");
+		if (Number.isFinite(parsed) && (maxBillions === null || parsed > maxBillions)) {
+			maxBillions = parsed;
+		}
+	}
+
+	if ((maxBillions !== null && maxBillions >= 24) || modelId.includes("splash") || modelId.includes("agentworld")) {
+		return "flagship_local";
+	}
+	if (maxBillions !== null && maxBillions <= 4.5) {
+		return "edge_tiny_4bit";
+	}
+	return "mid_local";
+}
+
+/**
+ * Determine optimal thinking level using the Regime 2 v2 tier-aware policy:
+ * - `ultra_low_bit` (2-bit/3-bit): hard-kill `"off"` (prevents 0%-2.5% representational collapse).
+ * - `edge_tiny_4bit` (<=4.5B 4-bit): `"off"` by default (prevents 75%-97.5% greedy loops).
+ * - `flagship_local` (27B+ 4-bit, e.g. qwen3.8-27b-splash): ALWAYS ON (`"high"` on symbolic/safety,
+ *   `"medium"` otherwise) -- empirically +12.5pp accuracy AND -21.2% ms/solved vs `"off"`.
+ * - `mid_local` (7B-14B 4-bit, e.g. qwen3.5-9b): HDM VoT Gate selective escalation (`lambda ~ 0.70`
+ *   via daemon `recommendedThinking`, or calibrated offline confidence fallback) -- lifts 9B to 87.5%
+ *   vs 80.0% always-ON / 82.5% always-OFF.
+ */
+export function resolveThinkingLevel(
+	targetModel: Pick<Model<Api>, "id" | "provider">,
 	track: System2Track,
 	confidence: number,
 	userSelectedLevel: ModelThinkingLevel,
+	recommendedThinking?: string,
 ): ModelThinkingLevel {
-	const modelId = targetModel.id.toLowerCase();
-	const isQuantizedLocal =
-		targetModel.provider === "lmstudio" ||
-		modelId.includes("smoll") ||
-		modelId.includes("iq2") ||
-		modelId.includes("iq3") ||
-		modelId.includes("q2_k") ||
-		modelId.includes("ud-") ||
-		modelId.includes("gguf") ||
-		modelId.includes("gemma-4-12b");
+	const tier = classifyRegime2ModelTier(targetModel);
+	const isHeavyTrack = track === "math" || track === "logic" || track === "physics";
 
-	// Regime 2 Protocol: Disable fragile internal thinking on quantized edge weights (Wanderer & Edge Coder)
-	if (isQuantizedLocal) {
+	if (tier === "ultra_low_bit" || tier === "edge_tiny_4bit") {
 		return "off";
 	}
 
-	if (["math", "logic", "physics"].includes(track)) {
+	if (tier === "flagship_local") {
+		if (track === "safety" || isHeavyTrack) {
+			return userSelectedLevel === "xhigh" || userSelectedLevel === "max" ? userSelectedLevel : "high";
+		}
+		return userSelectedLevel === "high" || userSelectedLevel === "xhigh" || userSelectedLevel === "max"
+			? userSelectedLevel
+			: "medium";
+	}
+
+	if (tier === "mid_local") {
+		// Fail-closed Gate 1: safety track always keeps thinking active on 9B/12B local models.
+		if (track === "safety") {
+			return "medium";
+		}
+		if (recommendedThinking === "on") {
+			return isHeavyTrack ? "medium" : "low";
+		}
+		if (recommendedThinking === "off") {
+			return "off";
+		}
+		// Offline lexical fallback calibrated to the lam=0.70 (~45% hard-turn) Pareto point.
+		if ((isHeavyTrack && confidence < 0.85) || confidence < 0.78) {
+			return "medium";
+		}
+		return "off";
+	}
+
+	// Cloud / frontier models
+	if (track === "safety" || isHeavyTrack) {
 		return confidence < 0.85 ? "high" : "medium";
+	}
+	if (recommendedThinking === "on") {
+		return userSelectedLevel !== "off" ? userSelectedLevel : "medium";
 	}
 	if (track === "code") {
 		return confidence < 0.8 ? "medium" : "low";
 	}
-	if (confidence >= 0.9) {
+	if (confidence >= 0.9 || recommendedThinking === "off") {
 		return "off";
 	}
 	return userSelectedLevel !== "off" ? userSelectedLevel : "low";
@@ -231,6 +303,7 @@ export function createSystem2AutoModel(runtime: ModelRuntime): VirtualModelDefin
 				decision.selected_track,
 				decision.confidence,
 				request.thinkingLevel,
+				decision.recommended_thinking,
 			);
 
 			// Surface System 1 tactile telemetry (System2 Brand Colors: Steel Blue #3d8baa, Coral Red #ef4223, Emerald #3e8363)
@@ -317,6 +390,7 @@ export function createSystem2DeliberativeModel(runtime: ModelRuntime): VirtualMo
 				"logic",
 				decision.confidence,
 				request.thinkingLevel !== "off" ? request.thinkingLevel : "high",
+				decision.recommended_thinking,
 			);
 
 			if (process.env.SYSTEM2_VERBOSE_ROUTING === "1") {
@@ -376,6 +450,7 @@ export function createSystem2LocalModel(runtime: ModelRuntime): VirtualModelDefi
 				decision.selected_track,
 				decision.confidence,
 				request.thinkingLevel,
+				decision.recommended_thinking,
 			);
 
 			if (process.env.SYSTEM2_VERBOSE_ROUTING === "1") {

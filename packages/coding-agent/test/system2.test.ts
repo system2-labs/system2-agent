@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import {
+	classifyRegime2ModelTier,
 	createSystem2AutoModel,
 	createSystem2DeliberativeModel,
 	createSystem2LocalModel,
+	resolveThinkingLevel,
 	System2Client,
 } from "../src/core/system2/index.ts";
 
@@ -122,5 +124,40 @@ describe("System 2 Cognitive Virtual Models", () => {
 
 		expect(route.model.id).toContain("qwen");
 		expect(route.thinkingLevel).toBe("off");
+	});
+
+	it("applies Regime 2 v2 tier-aware thinking policy across 27B splash, 9B VoT, tiny 4-bit, and 2-bit/3-bit", () => {
+		const splash27b = { id: "qwen3.8-27b-splash", provider: "lmstudio" };
+		const qwen9b = { id: "qwen3.5-9b", provider: "lmstudio" };
+		const gemma12b = { id: "google/gemma-4-12b", provider: "lmstudio" };
+		const tiny08b = { id: "Qwen3.5-0.8B-4bit", provider: "mlx" };
+		const smoll2bit = { id: "qwen-3.8-27b-smoll", provider: "lmstudio" };
+		const iq2 = { id: "qwen-3.8-27b-intermediate@q2_k_xl", provider: "lmstudio" };
+
+		expect(classifyRegime2ModelTier(splash27b)).toBe("flagship_local");
+		expect(classifyRegime2ModelTier(qwen9b)).toBe("mid_local");
+		expect(classifyRegime2ModelTier(gemma12b)).toBe("mid_local");
+		expect(classifyRegime2ModelTier(tiny08b)).toBe("edge_tiny_4bit");
+		expect(classifyRegime2ModelTier(smoll2bit)).toBe("ultra_low_bit");
+		expect(classifyRegime2ModelTier(iq2)).toBe("ultra_low_bit");
+
+		// 27B splash: thinking ALWAYS ON (high on symbolic/safety, medium on general/code)
+		expect(resolveThinkingLevel(splash27b, "math", 0.95, "off")).toBe("high");
+		expect(resolveThinkingLevel(splash27b, "code", 0.95, "off")).toBe("medium");
+		expect(resolveThinkingLevel(splash27b, "safety", 0.99, "off")).toBe("high");
+
+		// 9B mid_local: selective HDM VoT Gate (`recommendedThinking` wins; safety fail-closed)
+		expect(resolveThinkingLevel(qwen9b, "math", 0.9, "off", "on")).toBe("medium");
+		expect(resolveThinkingLevel(qwen9b, "code", 0.9, "off", "on")).toBe("low");
+		expect(resolveThinkingLevel(qwen9b, "math", 0.9, "high", "off")).toBe("off");
+		expect(resolveThinkingLevel(qwen9b, "safety", 0.99, "off", "off")).toBe("medium");
+		// Offline fallback (no daemon recommendedThinking): escalate low-conf / hard, off on easy high-conf
+		expect(resolveThinkingLevel(qwen9b, "math", 0.72, "off")).toBe("medium");
+		expect(resolveThinkingLevel(qwen9b, "general", 0.92, "off")).toBe("off");
+
+		// Tiny <=4.5B 4-bit and 2-bit/3-bit: hard OFF even if user/daemon asks for thinking
+		expect(resolveThinkingLevel(tiny08b, "math", 0.5, "high", "on")).toBe("off");
+		expect(resolveThinkingLevel(smoll2bit, "safety", 0.99, "high", "on")).toBe("off");
+		expect(resolveThinkingLevel(iq2, "math", 0.5, "high", "on")).toBe("off");
 	});
 });
