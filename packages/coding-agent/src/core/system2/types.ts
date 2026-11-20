@@ -38,6 +38,9 @@ export interface ToolVerificationResult {
 	reason?: string;
 	code?: string;
 	violations?: InvariantViolation[];
+	/** Set when auto-repair produced a payload that passed re-verification; callers should execute this instead. */
+	repairedParams?: Record<string, unknown>;
+	repairRule?: string;
 }
 
 export interface System2RouteDecision {

@@ -149,11 +149,14 @@ import {
 } from "./system-prompt.ts";
 import {
 	captureSnapshot,
+	evaluateConsequencePolicy,
 	ingestLogChunk,
+	inspectExecutionConsequences,
 	type MatchedError,
 	RollingLogBuffer,
 	rollbackSnapshot,
 	System2TrajectoryLogger,
+	type TaskGuardPolicy,
 	verifyPostExecution,
 	verifyToolCall,
 	type WorktreeSnapshot,
@@ -324,6 +327,8 @@ export interface AgentSessionConfig {
 	sessionStartEvent?: SessionStartEvent;
 	/** Optional override directory for System 2 JSONL trajectory logs. */
 	system2TrajectoriesDir?: string;
+	/** Optional System 2 scope lock / diff budget enforced pre-execution and by post-execution bash inspection. */
+	system2GuardPolicy?: TaskGuardPolicy;
 }
 
 export interface ExtensionBindings {
@@ -469,6 +474,7 @@ export class AgentSession {
 	private readonly _system2Sentinel = new RollingLogBuffer();
 	private readonly _system2TrajectoryLogger: System2TrajectoryLogger;
 	private _lastSystem2Feedback: string | null = null;
+	private _system2GuardPolicy: TaskGuardPolicy | undefined;
 	private _lastMutatingToolCall: { tool: string; args: Record<string, unknown> } | null = null;
 	private readonly _ingestedBashOutputs = new Map<string, string>();
 
@@ -566,6 +572,7 @@ export class AgentSession {
 		this._excludedTools = config.excludedToolNames ? createToolNameMatcher(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._system2GuardPolicy = config.system2GuardPolicy;
 		this._system2TrajectoryLogger = new System2TrajectoryLogger({
 			dir: config.system2TrajectoriesDir,
 			sessionId: this.sessionManager.getSessionId(),
@@ -1464,7 +1471,9 @@ export class AgentSession {
 			if (this.model?.provider === "system2") {
 				const toolArgs: Record<string, unknown> =
 					event.args && typeof event.args === "object" ? (event.args as Record<string, unknown>) : {};
-				const check = await verifyToolCall(event.toolName, toolArgs);
+				const check = await verifyToolCall(event.toolName, toolArgs, undefined, {
+					guardPolicy: this._system2GuardPolicy,
+				});
 				if (!check.allowed) {
 					const reason = check.reason || "Tool call blocked by System 2 Guard";
 					const context = this._buildSystem2Context(toolArgs);
@@ -1561,6 +1570,41 @@ export class AgentSession {
 					}
 				}
 				if (event.toolName === "bash") {
+					// Caper: bash is opaque pre-execution, so measure what it changed on disk before the snapshot is
+					// accepted or cleared. A scope or budget violation rolls everything back atomically.
+					if (this._system2GuardPolicy && this._activeSystem2Snapshot) {
+						const report = inspectExecutionConsequences(this._activeSystem2Snapshot, this._system2GuardPolicy);
+						const verdict = evaluateConsequencePolicy(report, this._system2GuardPolicy);
+						if (!verdict.allowed) {
+							const rb = await rollbackSnapshot(this._activeSystem2Snapshot);
+							this._activeSystem2Snapshot = null;
+							this._lastMutatingToolCall = null;
+							const reason = verdict.reason ?? "Consequence policy violated";
+							const rejectedCall = { tool: "bash", args: args ?? {} };
+							const feedback = this._formatSystem2Feedback({
+								prefix: "[System 2 Rollback]",
+								reason,
+								tool: "bash",
+								target: this._extractToolTarget(args),
+								latencyMs: rb.latencyMs,
+							});
+							this._emitSystem2Feedback(feedback, {
+								stage: "rollback",
+								tool: "bash",
+								reason,
+								code: verdict.code,
+								latencyMs: rb.latencyMs,
+							});
+							this._system2TrajectoryLogger.recordRejection({
+								stage: "rollback",
+								context: this._buildSystem2Context(rejectedCall.args),
+								rejected_call: rejectedCall,
+								guard_reason: reason,
+								rollback_latency_ms: rb.latencyMs,
+							});
+							throw new Error(`[System 2 Guard] Post-execution consequence check failed: ${reason}`);
+						}
+					}
 					const output = this._extractToolResultText(event.result);
 					this._ingestBashSentinelChunk(event.toolCallId, output);
 					const fullCallOutput = this._ingestedBashOutputs.get(event.toolCallId) ?? output;
@@ -1808,6 +1852,12 @@ export class AgentSession {
 	}
 	get lastKnownGoodSnapshot(): WorktreeSnapshot | null {
 		return this._lastKnownGoodSnapshot;
+	}
+	get system2GuardPolicy(): TaskGuardPolicy | undefined {
+		return this._system2GuardPolicy;
+	}
+	set system2GuardPolicy(policy: TaskGuardPolicy | undefined) {
+		this._system2GuardPolicy = policy;
 	}
 	get lastSystem2Feedback(): string | null {
 		return this._lastSystem2Feedback;

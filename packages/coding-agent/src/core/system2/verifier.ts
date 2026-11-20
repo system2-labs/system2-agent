@@ -2,6 +2,7 @@ import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSy
 import { stripTypeScriptTypes } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { System2Client } from "./client.ts";
+import { attemptArgumentRepair } from "./repair.ts";
 import type {
 	DiffBudget,
 	InvariantViolation,
@@ -62,6 +63,8 @@ export function checkSyntax(content: string, filePath: string): string | null {
 export interface VerifyToolOptions {
 	guardPolicy?: TaskGuardPolicy;
 	budgetTracker?: DiffBudgetTracker;
+	/** When true, a denial that matches a safe deterministic repair rule is repaired and re-verified. Default false. */
+	enableAutoRepair?: boolean;
 }
 
 export interface DiffDelta {
@@ -394,7 +397,29 @@ export function checkDiffBudget(
 
 const defaultClient = new System2Client();
 
+/**
+ * Verify a tool call. With `options.enableAutoRepair`, a denial is passed to the LeanGuard repair layer;
+ * a repair is only returned after the repaired payload passes `verifyToolCallCore` again.
+ */
 export async function verifyToolCall(
+	toolName: string,
+	params: Record<string, any> | undefined,
+	client: System2Client = defaultClient,
+	options?: VerifyToolOptions,
+): Promise<ToolVerificationResult> {
+	const result = await verifyToolCallCore(toolName, params, client, options);
+	if (result.allowed || !options?.enableAutoRepair || !params) return result;
+	const repair = await attemptArgumentRepair(toolName, params, result, {
+		client,
+		guardPolicy: options.guardPolicy,
+		budgetTracker: options.budgetTracker,
+	});
+	if (!repair.repaired || !repair.repairedParams) return result;
+	return { allowed: true, decision: "allow", repairedParams: repair.repairedParams, repairRule: repair.repairRule };
+}
+
+/** The verification checks themselves, with no repair. `attemptArgumentRepair` re-verifies through this. */
+export async function verifyToolCallCore(
 	toolName: string,
 	params: Record<string, any> | undefined,
 	client: System2Client = defaultClient,
