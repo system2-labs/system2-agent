@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -53,6 +53,19 @@ export async function captureSnapshot(cwd: string): Promise<WorktreeSnapshot> {
 
 // Detects whether anything on disk changed since the snapshot was captured. Returns false for
 // non-git directories (no git state to compare) so read-only commands never trigger a rollback.
+//
+// The comparison baseline is `snapshot.stashSha || snapshot.headSha`, never HEAD:
+// `git stash create` records a commit whose tree equals the exact tracked working tree
+// (staged + unstaged) at capture time, so `git diff --name-only <base>` is empty for
+// pre-existing dirty edits the snapshot already recorded, and non-empty only when a tracked
+// file was further modified, deleted, or reverted toward HEAD after the capture. Comparing
+// against HEAD (the old behaviour) treats every pre-existing dirty tracked file as a new
+// change, falsely reporting mutations in any repo that was already dirty.
+// We must NOT re-run `git stash create` and compare its SHA against `snapshot.stashSha`:
+// the command stamps the current wall-clock timestamp into the commit object, so two runs
+// over an identical dirty state produce different SHAs.
+// `execFileSync` (no shell) is used for the SHA-bearing diff to avoid shell interpolation
+// of a value read from the snapshot object.
 export function hasSnapshotChanges(snapshot: WorktreeSnapshot): boolean {
 	if (!snapshotIsRollbackable(snapshot)) return false;
 	const cwd = snapshot.cwd;
@@ -63,7 +76,22 @@ export function hasSnapshotChanges(snapshot: WorktreeSnapshot): boolean {
 			return "";
 		}
 	};
-	if (run("git diff --name-only HEAD").length > 0) return true;
+	// HEAD moved (commit, checkout, reset, rebase) since the snapshot: definitely changed.
+	if (snapshot.headSha && run("git rev-parse HEAD") !== snapshot.headSha) return true;
+	// Tracked-file diff against the snapshot's own tree; a missing stashSha (clean capture)
+	// falls back to headSha, which is the same tree.
+	const base = snapshot.stashSha || snapshot.headSha;
+	if (!base) return false;
+	if (
+		execFileSync("git", ["diff", "--name-only", base, "--"], {
+			cwd,
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+		}).trim().length > 0
+	) {
+		return true;
+	}
+	// Untracked-file delta: any untracked file now present that the snapshot did not record.
 	const current = new Set(run("git ls-files --others --exclude-standard").split("\n").filter(Boolean));
 	for (const file of snapshot.untrackedFiles) {
 		current.delete(file);

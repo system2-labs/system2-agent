@@ -104,4 +104,45 @@ describe("system2 checkpoint engine", () => {
 		writeFileSync(join(dir, "x.tmp"), "x\n");
 		expect(hasSnapshotChanges(snap)).toBe(true);
 	});
+
+	it("hasSnapshotChanges ignores pre-existing dirty tracked edits and pre-existing untracked files", async () => {
+		// Dirty state the snapshot must absorb: an unstaged tracked edit plus a pre-existing untracked file.
+		writeFileSync(join(dir, "f.txt"), "dirty-before\n");
+		writeFileSync(join(dir, "pre.txt"), "pre\n");
+		const snap = await captureSnapshot(dir);
+		expect(hasSnapshotChanges(snap)).toBe(false);
+
+		// Further modification after the capture: a real change.
+		writeFileSync(join(dir, "f.txt"), "dirty-after\n");
+		expect(hasSnapshotChanges(snap)).toBe(true);
+
+		// Restoring the exact pre-capture content: back to the snapshot baseline.
+		writeFileSync(join(dir, "f.txt"), "dirty-before\n");
+		expect(hasSnapshotChanges(snap)).toBe(false);
+
+		// Reverting toward HEAD: differs from the snapshot tree, still a change.
+		writeFileSync(join(dir, "f.txt"), "v1\n");
+		expect(hasSnapshotChanges(snap)).toBe(true);
+
+		// New untracked file after the capture: a change.
+		writeFileSync(join(dir, "f.txt"), "dirty-before\n");
+		writeFileSync(join(dir, "extra.tmp"), "extra\n");
+		expect(hasSnapshotChanges(snap)).toBe(true);
+
+		// HEAD advanced since the snapshot: a change even with the working tree at baseline.
+		rmSync(join(dir, "extra.tmp"));
+		execSync("git commit --allow-empty -m bump", { cwd: dir });
+		expect(hasSnapshotChanges(snap)).toBe(true);
+	});
+
+	it("hasSnapshotChanges ignores pre-existing staged edits until the file is modified after capture", async () => {
+		// Staged dirty edit at capture time; the stash tree includes it.
+		writeFileSync(join(dir, "f.txt"), "staged\n");
+		execSync("git add f.txt", { cwd: dir });
+		const snap = await captureSnapshot(dir);
+		expect(hasSnapshotChanges(snap)).toBe(false);
+
+		writeFileSync(join(dir, "f.txt"), "staged-again\n");
+		expect(hasSnapshotChanges(snap)).toBe(true);
+	});
 });
