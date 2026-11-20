@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { captureSnapshot, rollbackSnapshot } from "../src/core/system2/checkpoint.ts";
+import { captureSnapshot, hasSnapshotChanges, rollbackSnapshot } from "../src/core/system2/checkpoint.ts";
 
 describe("system2 checkpoint engine", () => {
 	let dir: string;
@@ -56,5 +56,52 @@ describe("system2 checkpoint engine", () => {
 		expect(readFileSync(join(dir, "f.txt"), "utf-8")).toBe("v2\n");
 		expect(existsSync(join(dir, "u.txt"))).toBe(true);
 		expect(existsSync(join(dir, "b.tmp"))).toBe(false);
+	});
+
+	it("rollback: manual snapshots without isGitRepo fall back to live git check", async () => {
+		writeFileSync(join(dir, "u.txt"), "untracked\n");
+		const legacy = { stashSha: "", headSha: "", timestamp: 0, cwd: dir, untrackedFiles: [] };
+		expect((await rollbackSnapshot(legacy as any)).restored).toBe(true);
+		expect(existsSync(join(dir, "u.txt"))).toBe(false);
+
+		const nongit = { stashSha: "", headSha: "", timestamp: 0, cwd: dir, untrackedFiles: [], isGitRepo: false };
+		expect((await rollbackSnapshot(nongit)).restored).toBe(false);
+	});
+
+	it("captureSnapshot in non-git temp dir sets isGitRepo false", async () => {
+		const plain = mkdtempSync(join(tmpdir(), "s2-cp-nongit-"));
+		try {
+			writeFileSync(join(plain, "a.txt"), "hello\n");
+			const snap = await captureSnapshot(plain);
+			expect(snap.isGitRepo).toBe(false);
+			expect(snap.headSha).toBe("");
+			expect(snap.stashSha).toBe("");
+			expect(snap.untrackedFiles).toEqual([]);
+			expect(hasSnapshotChanges(snap)).toBe(false);
+
+			writeFileSync(join(plain, "b.txt"), "new\n");
+			const res = await rollbackSnapshot(snap);
+			expect(res.restored).toBe(false);
+			expect(res.latencyMs).toBeLessThan(50);
+			// No git clean/reset ran: both files untouched.
+			expect(readFileSync(join(plain, "a.txt"), "utf-8")).toBe("hello\n");
+			expect(readFileSync(join(plain, "b.txt"), "utf-8")).toBe("new\n");
+		} finally {
+			rmSync(plain, { recursive: true, force: true });
+		}
+	});
+
+	it("hasSnapshotChanges detects tracked and untracked edits in a git repo", async () => {
+		const snap = await captureSnapshot(dir);
+		expect(hasSnapshotChanges(snap)).toBe(false);
+
+		writeFileSync(join(dir, "f.txt"), "v2\n");
+		expect(hasSnapshotChanges(snap)).toBe(true);
+
+		writeFileSync(join(dir, "f.txt"), "v1\n");
+		expect(hasSnapshotChanges(snap)).toBe(false);
+
+		writeFileSync(join(dir, "x.tmp"), "x\n");
+		expect(hasSnapshotChanges(snap)).toBe(true);
 	});
 });

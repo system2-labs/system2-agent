@@ -117,4 +117,92 @@ describe("AgentSession System 2 regression interception and rollback", () => {
 		).rejects.toThrow(/Post-execution verification failed/);
 		expect(existsSync(emptyFile)).toBe(false);
 	});
+
+	it("does not roll back read-only bash output containing FAILED in a non-git directory", async () => {
+		// No git init: rollback must never run and files must stay intact.
+		rmSync(join(dir, ".git"), { recursive: true, force: true });
+		writeFileSync(join(dir, "notes.txt"), "keep me\n");
+		const emit = (session as any)._handleAgentEvent;
+
+		await expect(
+			emit({
+				type: "tool_execution_start",
+				toolCallId: "n1",
+				toolName: "bash",
+				args: { command: "head notes.txt" },
+			}),
+		).resolves.toBeUndefined();
+		expect(session.activeSystem2Snapshot).toBeNull();
+
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "n1",
+			toolName: "bash",
+			result: { content: [{ text: "FAILED to parse header\nError: malformed line 3" }] },
+			isError: false,
+		});
+
+		expect(existsSync(join(dir, "notes.txt"))).toBe(true);
+		expect(readFileSync(join(dir, "notes.txt"), "utf-8")).toBe("keep me\n");
+	});
+
+	it("does not roll back a failing read-only bash in git repo with no prior mutation", async () => {
+		const emit = (session as any)._handleAgentEvent;
+		writeFileSync(join(dir, "grep.log"), "match FAILED here\n");
+		execSync("git add grep.log && git commit -m log", { cwd: dir });
+
+		await expect(
+			emit({
+				type: "tool_execution_start",
+				toolCallId: "g1",
+				toolName: "bash",
+				args: { command: "grep -c x nope" },
+			}),
+		).resolves.toBeUndefined();
+		expect(session.activeSystem2Snapshot).not.toBeNull();
+
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "g1",
+			toolName: "bash",
+			result: { content: [{ text: "grep: nope: No such file or directory\nError: no matches" }] },
+			isError: true,
+		});
+
+		expect(existsSync(join(dir, "grep.log"))).toBe(true);
+		expect(execSync("git status --porcelain", { cwd: dir }).toString().trim()).toBe("");
+	});
+
+	it("still rolls back after edit -> failing test and restores files cleanly", async () => {
+		const emit = (session as any)._handleAgentEvent;
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "m1",
+			toolName: "edit",
+			args: { path: join(dir, "calc.ts") },
+		});
+		writeFileSync(join(dir, "calc.ts"), "export const add = (a: number, b: number) => a - b;\n");
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "m1",
+			toolName: "edit",
+			result: { content: [{ text: "ok" }] },
+			isError: false,
+		});
+
+		await expect(
+			emit({ type: "tool_execution_start", toolCallId: "m2", toolName: "bash", args: { command: "npm test" } }),
+		).resolves.toBeUndefined();
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "m2",
+			toolName: "bash",
+			result: { content: [{ text: "FAILED calc.test.ts\nAssertionError: expected 1 to equal 3" }] },
+			isError: false,
+		});
+
+		expect(session.lastSystem2Feedback).toContain("[System 2 Rollback]");
+		expect(readFileSync(join(dir, "calc.ts"), "utf-8")).toBe("export const add = (a: number, b: number) => a + b;\n");
+		expect(execSync("git status --porcelain", { cwd: dir }).toString().trim()).toBe("");
+	});
 });

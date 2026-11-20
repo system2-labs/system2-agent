@@ -150,6 +150,7 @@ import {
 import {
 	captureSnapshot,
 	evaluateConsequencePolicy,
+	hasSnapshotChanges,
 	ingestLogChunk,
 	inspectExecutionConsequences,
 	type MatchedError,
@@ -1493,7 +1494,8 @@ export class AgentSession {
 					throw new Error(`[System 2 Guard] Blocked execution: ${check.reason}`);
 				}
 				if (!this._activeSystem2Snapshot && ["write", "edit", "write_file", "bash"].includes(event.toolName)) {
-					this._activeSystem2Snapshot = await captureSnapshot(this.sessionManager.getCwd());
+					const snap = await captureSnapshot(this.sessionManager.getCwd());
+					this._activeSystem2Snapshot = snap.isGitRepo ? snap : null;
 				}
 				if (event.args && typeof event.args === "object") {
 					this._activeToolArgs.set(event.toolCallId, toolArgs);
@@ -1530,7 +1532,23 @@ export class AgentSession {
 				if (["write", "edit", "write_file"].includes(event.toolName)) {
 					const postCheck = await verifyPostExecution(event.toolName, args);
 					if (!postCheck.allowed) {
-						const rb = this._activeSystem2Snapshot ? await rollbackSnapshot(this._activeSystem2Snapshot) : null;
+						let rbLatencyMs: number | undefined;
+						if (this._activeSystem2Snapshot) {
+							try {
+								const rb = await rollbackSnapshot(this._activeSystem2Snapshot);
+								rbLatencyMs = rb.latencyMs;
+							} catch {
+								this._emitSystem2Feedback(
+									this._formatSystem2Feedback({
+										prefix: "[System 2 Rollback]",
+										reason: "Rollback failed",
+										tool: event.toolName,
+										target: this._extractToolTarget(args),
+									}),
+									{ stage: "rollback_error", tool: event.toolName, reason: "Rollback failed" },
+								);
+							}
+						}
 						this._activeSystem2Snapshot = null;
 						this._lastMutatingToolCall = null;
 						const reason = postCheck.reason || "Post-execution verification failed";
@@ -1540,20 +1558,20 @@ export class AgentSession {
 							reason,
 							tool: event.toolName,
 							target: this._extractToolTarget(args),
-							latencyMs: rb?.latencyMs,
+							latencyMs: rbLatencyMs,
 						});
 						this._emitSystem2Feedback(feedback, {
 							stage: "post_guard",
 							tool: event.toolName,
 							reason,
-							latencyMs: rb?.latencyMs,
+							latencyMs: rbLatencyMs,
 						});
 						this._system2TrajectoryLogger.recordRejection({
 							stage: "post_guard",
 							context,
 							rejected_call: { tool: event.toolName, args: args ?? {} },
 							guard_reason: reason,
-							rollback_latency_ms: rb?.latencyMs,
+							rollback_latency_ms: rbLatencyMs,
 						});
 						throw new Error(`[System 2 Guard] Post-execution verification failed: ${postCheck.reason}`);
 					}
@@ -1572,11 +1590,14 @@ export class AgentSession {
 				if (event.toolName === "bash") {
 					// Caper: bash is opaque pre-execution, so measure what it changed on disk before the snapshot is
 					// accepted or cleared. A scope or budget violation rolls everything back atomically.
-					if (this._system2GuardPolicy && this._activeSystem2Snapshot) {
+					if (this._system2GuardPolicy && this._activeSystem2Snapshot?.isGitRepo) {
 						const report = inspectExecutionConsequences(this._activeSystem2Snapshot, this._system2GuardPolicy);
 						const verdict = evaluateConsequencePolicy(report, this._system2GuardPolicy);
 						if (!verdict.allowed) {
-							const rb = await rollbackSnapshot(this._activeSystem2Snapshot);
+							const rb = await rollbackSnapshot(this._activeSystem2Snapshot).catch(() => ({
+								restored: false,
+								latencyMs: 0,
+							}));
 							this._activeSystem2Snapshot = null;
 							this._lastMutatingToolCall = null;
 							const reason = verdict.reason ?? "Consequence policy violated";
@@ -1630,16 +1651,35 @@ export class AgentSession {
 
 					if (hasFailureSignal) {
 						let rbLatencyMs: number | undefined;
-						if (this._activeSystem2Snapshot) {
-							const rb = await rollbackSnapshot(this._activeSystem2Snapshot);
-							this._activeSystem2Snapshot = null;
-							rbLatencyMs = rb.latencyMs;
-							if (this.state) {
-								(this.state as any).deliberation = {
-									status: "fail",
-									summary: `Rollback triggered (${rb.latencyMs}ms)`,
-								};
+						// Only roll back when this call could have mutated the worktree: an explicit prior
+						// mutating tool call, or files that actually changed on disk since the snapshot. A
+						// read-only command whose output merely contains "FAILED" must not trigger a rollback.
+						const mutationOccurred =
+							this._activeSystem2Snapshot !== null &&
+							(this._lastMutatingToolCall !== null || hasSnapshotChanges(this._activeSystem2Snapshot));
+						if (mutationOccurred) {
+							try {
+								const rb = await rollbackSnapshot(this._activeSystem2Snapshot!);
+								rbLatencyMs = rb.latencyMs;
+							} catch (err) {
+								const reason = `Rollback failed: ${err instanceof Error ? err.message : String(err)}`;
+								this._emitSystem2Feedback(
+									this._formatSystem2Feedback({
+										prefix: "[System 2 Rollback]",
+										reason,
+										tool: "bash",
+										target: this._extractToolTarget(args),
+									}),
+									{ stage: "rollback_error", tool: "bash", reason },
+								);
 							}
+						}
+						this._activeSystem2Snapshot = null;
+						if (rbLatencyMs !== undefined && this.state) {
+							(this.state as any).deliberation = {
+								status: "fail",
+								summary: `Rollback triggered (${rbLatencyMs}ms)`,
+							};
 						}
 						const rejectedCall = this._lastMutatingToolCall ?? { tool: "bash", args: args ?? {} };
 						this._lastMutatingToolCall = null;
