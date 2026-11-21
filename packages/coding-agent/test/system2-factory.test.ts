@@ -264,6 +264,21 @@ describe("system2 factory CLI subcommand (runFactoryCliCommand)", () => {
 			const reviewJson = JSON.parse(reviewLines.join("\n"));
 			expect(reviewJson.neighborTests).toContain("test_bus.py");
 			expect(reviewJson.reviewPrompt).toContain("Layer-Up Contract Review");
+
+			// Interactive Tier-3 Architect chat session (`system2 factory chat`) + `/lock` + `/quit`
+			const chatOut: string[] = [];
+			const fakeInputs = ["/status", "/lock pytest,neo4j", "/quit"];
+			let inputIdx = 0;
+			expect(
+				await runFactoryCliCommand(["chat", "--local-tier3"], {
+					cwd: ws,
+					stdout: (s) => chatOut.push(s),
+					promptLine: async () => fakeInputs[inputIdx++],
+				}),
+			).toBe(0);
+			const joinedChat = chatOut.join("\n");
+			expect(joinedChat).toContain("Interactive Tier-3 Architect Session");
+			expect(joinedChat).toContain("Locked StackLock");
 		} finally {
 			rmSync(ws, { recursive: true, force: true });
 		}

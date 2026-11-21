@@ -7,9 +7,10 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { totalmem } from "node:os";
 import { join, relative, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { AGY_OAUTH_TOKEN_FILENAMES, resolveAgyCommand, resolveRealAgyTokenPath, runAgyPrompt } from "./agy-bridge.ts";
 import {
 	buildTier3LayerReviewPrompt,
@@ -24,6 +25,8 @@ export interface FactoryCliContext {
 	cwd: string;
 	stdout?: (text: string) => void;
 	stderr?: (text: string) => void;
+	/** Test seam for interactive REPL lines in `system2 factory chat`. */
+	promptLine?: (promptText: string) => Promise<string | undefined>;
 }
 
 const DEFAULT_SCAN_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py"]);
@@ -123,18 +126,25 @@ function detectAvailableLocalModels(): string[] {
 
 function formatFactoryHelp(): string {
 	return [
-		"Usage: system2 factory <subcommand> [options]",
+		"Usage: system2 factory [subcommand] [options]",
 		"",
 		"Subcommands:",
+		"  chat [goal] [--model <id>]          Interactive Tier-3 Architect session: align on stack, review Neo4j contracts, and lock Kanban plan",
 		"  status [--json]                     Probe hardware, Neo4j 5.26.0 graph store, AGY Tier-3 bridge, and local models",
 		"  scan [files...] [--json]            Scan source/test contracts in cwd and upsert into Neo4j + JSON fallback",
 		"  plan <goal> [--files a,b] [--agy]   Run Phase 0 StackLock check, Neo4j contract scan, and wave schedule (optional live AGY Tier-3 plan)",
 		"  review [--card <id>] [--agy]        Build (and optionally execute via AGY Tier-3) a Layer-Up 1-hop contract review for uncommitted git diff",
 		"",
+		"Interactive chat commands inside `system2 factory chat`:",
+		"  /lock [pkg1,pkg2]                   Lock ApprovedStackLock + Kanban waves to .system2/factory-plan.json",
+		"  /status                             Show active Tier-3 model, Neo4j status, and conversation id",
+		"  /quit                               Exit interactive Tier-3 Architect session",
+		"",
 		"Examples (from ~/test or any workspace):",
+		"  system2 factory chat",
+		'  system2 factory chat "Add pause_topic and resume_topic to EventBus in event_bus.py"',
 		"  system2 factory status",
 		"  system2 factory scan",
-		'  system2 factory plan "Add pause_topic and resume_topic to EventBus in event_bus.py"',
 		"  system2 factory review --agy",
 	].join("\n");
 }
@@ -145,6 +155,41 @@ function parseFlagValue(args: readonly string[], flag: string): string | undefin
 	return undefined;
 }
 
+async function queryLocalLmStudioTurn(params: {
+	modelId: string;
+	systemPrompt: string;
+	history: readonly { role: "user" | "assistant"; content: string }[];
+	baseUrl?: string;
+}): Promise<{ ok: boolean; text: string; errorDetail?: string }> {
+	const cleanModel = params.modelId.replace(/^lmstudio\//, "");
+	const endpoint = `${(params.baseUrl ?? process.env.LMSTUDIO_BASE_URL ?? "http://127.0.0.1:1234").replace(/\/$/, "")}/v1/chat/completions`;
+	try {
+		const res = await fetch(endpoint, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				model: cleanModel,
+				messages: [{ role: "system", content: params.systemPrompt }, ...params.history],
+				temperature: 0.2,
+			}),
+		});
+		if (!res.ok) {
+			return { ok: false, text: "", errorDetail: `LM Studio HTTP ${res.status}` };
+		}
+		const payload = (await res.json()) as {
+			choices?: { message?: { content?: string } }[];
+		};
+		const content = payload.choices?.[0]?.message?.content ?? "";
+		return { ok: true, text: content.trim() };
+	} catch (error) {
+		return {
+			ok: false,
+			text: "",
+			errorDetail: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
 /**
  * Top-level dispatcher for `system2 factory ...`.
  * Returns an exit code (0 on success, 1 on usage/runtime error).
@@ -152,10 +197,17 @@ function parseFlagValue(args: readonly string[], flag: string): string | undefin
 export async function runFactoryCliCommand(args: readonly string[], ctx: FactoryCliContext): Promise<number> {
 	const out = ctx.stdout ?? ((line: string) => console.log(line));
 	const err = ctx.stderr ?? ((line: string) => console.error(line));
-	const sub = args[0];
+	const rawSub = args[0];
 	const jsonMode = args.includes("--json");
 
-	if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+	if (rawSub === "--help" || rawSub === "-h" || rawSub === "help") {
+		out(formatFactoryHelp());
+		return 0;
+	}
+
+	// Default `system2 factory` (no subcommand) into interactive Tier-3 Architect chat when a prompt reader or TTY exists.
+	const sub = !rawSub ? (ctx.promptLine || process.stdin.isTTY ? "chat" : "help") : rawSub;
+	if (sub === "help") {
 		out(formatFactoryHelp());
 		return 0;
 	}
@@ -163,6 +215,228 @@ export async function runFactoryCliCommand(args: readonly string[], ctx: Factory
 	const store = new System2GraphStore({
 		fallbackJsonPath: join(ctx.cwd, ".system2", "factory-graph.json"),
 	});
+
+	if (sub === "chat") {
+		const filesArg = parseFlagValue(args, "--files");
+		const targetFiles = filesArg
+			? filesArg
+					.split(",")
+					.map((s) => s.trim())
+					.filter(Boolean)
+			: collectFactoryTargetFiles(ctx.cwd, []);
+		const filePayloads: { path: string; content: string; isTest?: boolean }[] = [];
+		for (const relPath of targetFiles) {
+			const full = resolve(ctx.cwd, relPath);
+			try {
+				filePayloads.push({ path: relPath, content: readFileSync(full, "utf8"), isTest: isTestFilePath(relPath) });
+			} catch {
+				// Ignore unreadable files.
+			}
+		}
+		const upsertRes = await store.upsertCodeContracts(filePayloads);
+		const agyBinary = resolveAgyCommand();
+		const agyToken = resolveRealAgyTokenPath();
+		const hasAgyCli = (agyBinary !== "agy" || existsSync("/opt/homebrew/bin/agy")) && agyToken !== undefined;
+		const localModels = detectAvailableLocalModels();
+		const totalMemoryGb = Math.round(totalmem() / 1024 ** 3);
+		const hardware = probeFactoryHardwareAndModels({
+			totalMemoryGb,
+			availableLocalModels: localModels,
+			hasAgyCli,
+			preferLocalTier3: args.includes("--local-tier3"),
+		});
+		const tier3Model = parseFlagValue(args, "--model") ?? hardware.tier3ArchitectModel;
+		const useAgy = tier3Model.startsWith("agy/") || tier3Model.startsWith("antigravity/");
+
+		// Collect optional initial goal passed after `system2 factory chat "<goal>"`
+		const positional: string[] = [];
+		for (let i = rawSub === "chat" ? 1 : 0; i < args.length; i++) {
+			const a = args[i];
+			if (a === "--files" || a === "--model") {
+				i++;
+				continue;
+			}
+			if (a.startsWith("--")) continue;
+			positional.push(a);
+		}
+		let pendingGoal = positional.join(" ").trim();
+
+		out("=== System 2 Software Factory: Interactive Tier-3 Architect Session ===");
+		out(`Workspace:        ${ctx.cwd}`);
+		out(
+			`Graph Contracts:  ${filePayloads.length} file(s), ${upsertRes.symbolsUpserted} symbols, ${upsertRes.edgesUpserted} edges [${upsertRes.backend}]`,
+		);
+		out(`Tier-3 Architect: ${tier3Model} (${useAgy ? "isolated 0o700 AGY bridge" : "local LM Studio"})`);
+		out(`Tier-2 Worker:    ${hardware.tier2WorkerModel} (${hardware.memoryStrategy})`);
+		out("Commands:         /lock [pkg1,pkg2] to lock StackLock & Kanban plan | /status | /quit");
+		out("-----------------------------------------------------------------------");
+
+		const rl =
+			ctx.promptLine === undefined ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+		const readNextLine = async (promptText: string): Promise<string | undefined> => {
+			if (ctx.promptLine) return ctx.promptLine(promptText);
+			if (!rl) return undefined;
+			return new Promise((resolveLine) => {
+				rl.question(promptText, (answer) => resolveLine(answer));
+			});
+		};
+
+		let conversationId: string | undefined;
+		const history: { role: "user" | "assistant"; content: string }[] = [];
+		let lastGoal = pendingGoal || "Software Factory feature build";
+
+		const systemContext = [
+			"You are the System 2 Tier-3 Software Factory Architect.",
+			`Workspace: ${ctx.cwd}`,
+			`Scanned files (${upsertRes.symbolsUpserted} symbols, ${upsertRes.edgesUpserted} edges in ${upsertRes.backend}): ${targetFiles.slice(0, 20).join(", ")}`,
+			"Your job is to talk through the plan interactively with the developer BEFORE any Tier-2 worker writes code:",
+			"1. If any stack choice (agent framework, RAG/vector/graph DB, API framework, auth) is underspecified, present 4-5 vetted options with official docs URLs and ask the developer to choose.",
+			"2. Propose a Locked Stack (ApprovedStackLock) so no unapproved SDKs or rogue dependencies can be installed.",
+			"3. Propose small, file-scoped Kanban cards (with allowedFiles, maxChangedLines, and deterministic verifyCmd) organized into conflict-free waves.",
+			"Keep responses concise, direct, and grounded in the scanned workspace files.",
+		].join("\n");
+
+		try {
+			while (true) {
+				let line: string | undefined;
+				if (pendingGoal) {
+					line = pendingGoal;
+					pendingGoal = "";
+					out(`\nYou> ${line}`);
+				} else {
+					line = await readNextLine("\nYou> ");
+				}
+				if (line === undefined) break;
+				const trimmed = line.trim();
+				if (trimmed === "") continue;
+				if (trimmed === "/quit" || trimmed === "/exit") {
+					out("Exiting Tier-3 Architect session.");
+					break;
+				}
+				if (trimmed === "/status") {
+					out(
+						`Tier-3: ${tier3Model} | Tier-2: ${hardware.tier2WorkerModel} | Graph: ${upsertRes.backend} (${upsertRes.symbolsUpserted} symbols) | Conversation: ${conversationId ?? "local"}`,
+					);
+					continue;
+				}
+				if (trimmed === "/lock" || trimmed.startsWith("/lock ")) {
+					const pkgArg = trimmed.slice("/lock".length).trim();
+					const allowedPackages = pkgArg
+						? pkgArg
+								.split(",")
+								.map((s) => s.trim())
+								.filter(Boolean)
+						: [];
+					const sourceFiles = filePayloads.filter((f) => !f.isTest).map((f) => f.path);
+					const testFiles = filePayloads.filter((f) => f.isTest).map((f) => f.path);
+					const primaryFiles = sourceFiles.length > 0 ? sourceFiles : targetFiles;
+					const runId = `locked-${Date.now()}`;
+					const graphCards: KanbanCardNode[] = primaryFiles.slice(0, 4).map((file, idx) => {
+						const allowedFiles = [file, ...testFiles.slice(0, 1)];
+						return {
+							id: `S2-CARD-0${idx + 1}`,
+							runId,
+							title: `${lastGoal} (${file})`,
+							status: "todo",
+							allowedFiles,
+							maxChangedLines: 150,
+							verifyCmd: allowedFiles.some((f) => f.endsWith(".py")) ? "pytest -q" : "npx vitest run",
+							dependsOn: [],
+						};
+					});
+					await store.upsertKanbanCards(runId, graphCards);
+					const coupled = await store.findCoupledCards(runId);
+					const factoryCards: FactoryKanbanCard[] = graphCards.map((c) => ({
+						id: c.id,
+						title: c.title,
+						allowedFiles: c.allowedFiles,
+						maxChangedLines: c.maxChangedLines,
+						verifyCmd: c.verifyCmd,
+						dependsOn: c.dependsOn,
+					}));
+					const waves =
+						factoryCards.length > 0
+							? scheduleKanbanWaves(factoryCards, coupled).map((w) => w.map((c) => c.id))
+							: [];
+					const planDir = join(ctx.cwd, ".system2");
+					mkdirSync(planDir, { recursive: true });
+					const planFile = join(planDir, "factory-plan.json");
+					const lockedPlan = {
+						lockedAt: new Date().toISOString(),
+						goal: lastGoal,
+						tier3ArchitectModel: tier3Model,
+						tier2WorkerModel: hardware.tier2WorkerModel,
+						stackLock: {
+							runtime: primaryFiles.some((f) => f.endsWith(".py")) ? "python" : "node",
+							allowedPackages,
+							referenceDocs: [],
+							allowNewDependencies: false,
+						},
+						cards: factoryCards,
+						coupledPairs: coupled,
+						waves,
+						architectTranscript: history,
+					};
+					writeFileSync(planFile, JSON.stringify(lockedPlan, null, 2), "utf8");
+					out(
+						`Locked StackLock + ${factoryCards.length} Kanban card(s) across ${waves.length} wave(s) -> ${planFile}`,
+					);
+					continue;
+				}
+
+				lastGoal = trimmed;
+				const stackCheck = detectUnderspecifiedStack(
+					trimmed,
+					filePayloads.map((f) => f.path),
+				);
+				let stackHint = "";
+				if (stackCheck.needsClarification) {
+					const lines: string[] = [
+						`[Phase 0 Stack Discovery triggered for categories: ${stackCheck.missingCategories.join(", ")}]`,
+					];
+					for (const cat of stackCheck.missingCategories) {
+						const opts = stackCheck.optionsByCategory[cat] ?? [];
+						lines.push(`Category '${cat}' vetted options:`);
+						for (const opt of opts) lines.push(`- ${opt.name} (${opt.docsUrl}): ${opt.summary}`);
+					}
+					stackHint = lines.join("\n");
+					out(`\n${stackHint}`);
+				}
+
+				history.push({ role: "user", content: trimmed });
+				if (useAgy) {
+					const promptToSend =
+						conversationId === undefined
+							? `${systemContext}\n\n${stackHint ? `${stackHint}\n\n` : ""}Developer: ${trimmed}`
+							: `${stackHint ? `${stackHint}\n\n` : ""}${trimmed}`;
+					const res = await runAgyPrompt({
+						prompt: promptToSend,
+						model: tier3Model,
+						conversationId,
+						cwd: ctx.cwd,
+					});
+					if (res.conversationId) conversationId = res.conversationId;
+					const reply = res.ok
+						? res.text
+						: `[Tier-3 AGY ${res.errorKind ?? "error"}]: ${res.errorDetail ?? "failed"}`;
+					history.push({ role: "assistant", content: reply });
+					out(`\nTier-3 (${tier3Model})>\n${reply}`);
+				} else {
+					const res = await queryLocalLmStudioTurn({
+						modelId: tier3Model,
+						systemPrompt: `${systemContext}${stackHint ? `\n\n${stackHint}` : ""}`,
+						history,
+					});
+					const reply = res.ok ? res.text : `[Tier-3 Local LM Studio error]: ${res.errorDetail ?? "failed"}`;
+					history.push({ role: "assistant", content: reply });
+					out(`\nTier-3 (${tier3Model})>\n${reply}`);
+				}
+			}
+		} finally {
+			rl?.close();
+		}
+		return 0;
+	}
 
 	if (sub === "status") {
 		const neo4jOnline = await store.pingNeo4j();
