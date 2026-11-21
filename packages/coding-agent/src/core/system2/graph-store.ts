@@ -110,7 +110,7 @@ const PYTHON_SYMBOL_PATTERNS: readonly { pattern: RegExp; kind: CodeSymbolNode["
 	{ pattern: /\bclass\s+(\w+)/g, kind: "class" },
 ];
 
-const TS_IMPORT_PATTERN = /import\s+(?:(type\s+)?(.+?)\s+from\s+)?["']([^"']+)["']/g;
+const TS_IMPORT_PATTERN = /import\s+(?:(type\s+)?([\s\S]+?)\s+from\s+)?["']([^"']+)["']/g;
 const PYTHON_IMPORT_PATTERN = /(?:from\s+([\w.]+)\s+import\s+([^;\n]+)|import\s+([\w.]+(?:\s+as\s+\w+)?))/g;
 const CALL_PATTERN = /([A-Za-z_]\w*)\s*\(/g;
 
@@ -375,7 +375,11 @@ export class System2GraphStore {
 		const touchedSymbolNames = this.definedSymbolNames(touched);
 		const touches = (target: string): boolean => {
 			const file = target.includes("::") ? target.slice(0, target.indexOf("::")) : target;
-			return touched.has(file) || touchedSymbolNames.has(target);
+			if (touched.has(file) || touchedSymbolNames.has(target)) return true;
+			for (const touchedFile of touched) {
+				if (this.fileRefMatches(file, touchedFile)) return true;
+			}
+			return false;
 		};
 		const neighborTriples: string[] = [];
 		const neighborTests: string[] = [];
