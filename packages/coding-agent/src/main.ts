@@ -62,6 +62,7 @@ import {
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
+import { runFactoryCliCommand } from "./core/system2/factory-cli.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
@@ -665,6 +666,11 @@ export async function main(args: string[], options?: MainOptions) {
 	if (args[0] === "mcp") {
 		const { runMcpCommand } = await loadMcpCommand();
 		process.exitCode = await runMcpCommand(args.slice(1), { cwd, agentDir });
+		return;
+	}
+
+	if (args[0] === "factory") {
+		process.exitCode = await runFactoryCliCommand(args.slice(1), { cwd });
 		return;
 	}
 

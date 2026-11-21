@@ -3,6 +3,7 @@ export * from "./checkpoint.ts";
 export * from "./client.ts";
 export * from "./consequence.ts";
 export * from "./factory.ts";
+export * from "./factory-cli.ts";
 export * from "./footer.ts";
 export * from "./graph-store.ts";
 export * from "./policy.ts";

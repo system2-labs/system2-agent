@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	type ApprovedStackLock,
@@ -11,6 +14,7 @@ import {
 	verifyCommandAgainstStackLock,
 	verifySourceImportsAgainstStackLock,
 } from "../src/core/system2/factory.ts";
+import { collectFactoryTargetFiles, runFactoryCliCommand } from "../src/core/system2/factory-cli.ts";
 
 const LOCK: ApprovedStackLock = {
 	allowedPackages: ["zod", "lmstudio", "@factory/common"],
@@ -213,5 +217,55 @@ describe("watchdog and tier-3 layer review", () => {
 		expect(prompt).toContain("(parser)-[:EXPORTS]->(parseThing)");
 		expect(prompt).toContain("no-dynamic-import");
 		expect(prompt).toContain("diff --git");
+	});
+});
+
+describe("system2 factory CLI subcommand (runFactoryCliCommand)", () => {
+	it(" executes status, scan, plan, and review directly against a workspace directory", async () => {
+		const ws = mkdtempSync(join(tmpdir(), "s2-factory-cli-"));
+		writeFileSync(join(ws, "bus.py"), "class EventBus:\n    def publish(self, topic, msg):\n        return topic\n");
+		writeFileSync(
+			join(ws, "test_bus.py"),
+			"from bus import EventBus\ndef test_publish():\n    b = EventBus()\n    assert b.publish('a', 1) == 'a'\n",
+		);
+		try {
+			const files = collectFactoryTargetFiles(ws, []);
+			expect(files).toEqual(["bus.py", "test_bus.py"]);
+
+			const statusLines: string[] = [];
+			expect(await runFactoryCliCommand(["status", "--json"], { cwd: ws, stdout: (s) => statusLines.push(s) })).toBe(
+				0,
+			);
+			const statusJson = JSON.parse(statusLines.join("\n"));
+			expect(statusJson.cwd).toBe(ws);
+			expect(statusJson.hardware.tier2WorkerModel).toBeTruthy();
+
+			const scanLines: string[] = [];
+			expect(await runFactoryCliCommand(["scan", "--json"], { cwd: ws, stdout: (s) => scanLines.push(s) })).toBe(0);
+			const scanJson = JSON.parse(scanLines.join("\n"));
+			expect(scanJson.filesScanned).toBe(2);
+			expect(scanJson.symbolsUpserted).toBeGreaterThanOrEqual(2);
+
+			const planLines: string[] = [];
+			expect(
+				await runFactoryCliCommand(["plan", "Build an agent with RAG over EventBus", "--json"], {
+					cwd: ws,
+					stdout: (s) => planLines.push(s),
+				}),
+			).toBe(0);
+			const planJson = JSON.parse(planLines.join("\n"));
+			expect(planJson.stackDiscovery.needsClarification).toBe(true);
+			expect(planJson.waves.length).toBeGreaterThan(0);
+
+			const reviewLines: string[] = [];
+			expect(await runFactoryCliCommand(["review", "--json"], { cwd: ws, stdout: (s) => reviewLines.push(s) })).toBe(
+				0,
+			);
+			const reviewJson = JSON.parse(reviewLines.join("\n"));
+			expect(reviewJson.neighborTests).toContain("test_bus.py");
+			expect(reviewJson.reviewPrompt).toContain("Layer-Up Contract Review");
+		} finally {
+			rmSync(ws, { recursive: true, force: true });
+		}
 	});
 });
