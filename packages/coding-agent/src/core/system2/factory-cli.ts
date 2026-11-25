@@ -20,6 +20,13 @@ import {
 	scheduleKanbanWaves,
 } from "./factory.ts";
 import { type KanbanCardNode, System2GraphStore } from "./graph-store.ts";
+import { queryRoundtablePitches, readReverieChainFromFile, verifyReverieChain } from "./reverie-ledger.ts";
+import {
+	auditRepoSecretsAndPii,
+	planStandaloneFactoryRun,
+	runNativeSpecVerify,
+	runQuickCliModelArena,
+} from "./standalone-factory.ts";
 
 export interface FactoryCliContext {
 	cwd: string;
@@ -111,6 +118,7 @@ function detectAvailableLocalModels(): string[] {
 	const found = new Set<string>();
 	try {
 		const out = execFileSync("lms", ["ls"], { encoding: "utf8", timeout: 3000 });
+		if (/qwen3\.8-flash-next/i.test(out)) found.add("lmstudio/qwen3.8-flash-next");
 		if (/qwen3\.8-27b-splash/i.test(out)) found.add("lmstudio/qwen3.8-27b-splash");
 		if (/qwen3\.5-9b/i.test(out)) found.add("lmstudio/qwen3.5-9b");
 		if (/gemma-4-12b/i.test(out)) found.add("lmstudio/google/gemma-4-12b");
@@ -118,6 +126,7 @@ function detectAvailableLocalModels(): string[] {
 		// Fall back to known defaults when `lms` CLI is not on PATH.
 	}
 	if (found.size === 0) {
+		found.add("lmstudio/qwen3.8-flash-next");
 		found.add("lmstudio/qwen3.8-27b-splash");
 		found.add("lmstudio/qwen3.5-9b");
 	}
@@ -134,6 +143,11 @@ function formatFactoryHelp(): string {
 		"  scan [files...] [--json]            Scan source/test contracts in cwd and upsert into Neo4j + JSON fallback",
 		"  plan <goal> [--files a,b] [--agy]   Run Phase 0 StackLock check, Neo4j contract scan, and wave schedule (optional live AGY Tier-3 plan)",
 		"  review [--card <id>] [--agy]        Build (and optionally execute via AGY Tier-3) a Layer-Up 1-hop contract review for uncommitted git diff",
+		"  verify <spec.toml> [--repo <dir>]   Run native deterministic spec.toml verification and generate verify.md + pr-body.md",
+		"  run [--plan <path>] [--model <id>]  Plan & execute standalone worktree waves with lean pi flags and safe VRAM load caps",
+		"  reverie [list|verify] [--file <p>]  Inspect or cryptographically verify the Nightly Reverie Chain (.system2/reverie.chain.jsonl)",
+		"  arena <model-id> [--vram <gb>]      Run Phase 0-3 Challenger Model Arena & safe LM Studio VRAM load planner",
+		"  audit-secrets [files...] [--json]   Scan repository for leaked API keys, private keys, personal home paths, and .gitignore gaps",
 		"",
 		"Interactive chat commands inside `system2 factory chat`:",
 		"  /lock [pkg1,pkg2]                   Lock ApprovedStackLock + Kanban waves to .system2/factory-plan.json",
@@ -754,6 +768,125 @@ export async function runFactoryCliCommand(args: readonly string[], ctx: Factory
 			out(prompt);
 		}
 		return 0;
+	}
+
+	if (sub === "verify") {
+		const specArg = args[1];
+		if (!specArg || specArg.startsWith("--")) {
+			err("Error: `system2 factory verify <spec.toml>` requires a path to spec.toml.");
+			return 1;
+		}
+		const repoArg = parseFlagValue(args, "--repo") ?? ctx.cwd;
+		try {
+			const res = runNativeSpecVerify(resolve(ctx.cwd, specArg), resolve(ctx.cwd, repoArg));
+			if (jsonMode) out(JSON.stringify(res, null, 2));
+			else {
+				out(`=== Native Spec Verification: ${res.ticket} (${res.slug}) ===`);
+				out(`Status:     ${res.passed ? "PASS" : "FAIL"}`);
+				out(`Written:    ${res.verifyMdPath}`);
+				out(`PR Body:    ${res.prBodyPath}`);
+			}
+			return res.passed ? 0 : 1;
+		} catch (e) {
+			err(`Verification error: ${e instanceof Error ? e.message : String(e)}`);
+			return 1;
+		}
+	}
+
+	if (sub === "run") {
+		const planPath = resolve(ctx.cwd, parseFlagValue(args, "--plan") ?? ".system2/factory-plan.json");
+		const modelId = parseFlagValue(args, "--model") ?? "qwen3.8-27b-splash";
+		let goal = "Standalone Factory Wave Run";
+		let cards: FactoryKanbanCard[] = [];
+		let coupledPairs: { cardA: string; cardB: string }[] = [];
+		if (existsSync(planPath)) {
+			try {
+				const raw = JSON.parse(readFileSync(planPath, "utf8")) as {
+					goal?: string;
+					cards?: FactoryKanbanCard[];
+					coupledPairs?: { cardA: string; cardB: string }[];
+				};
+				goal = raw.goal ?? goal;
+				cards = raw.cards ?? [];
+				coupledPairs = raw.coupledPairs ?? [];
+			} catch {
+				// Use empty cards if plan file is malformed.
+			}
+		}
+		const runPlan = planStandaloneFactoryRun({ goal, cards, coupledPairs, modelId });
+		if (jsonMode) out(JSON.stringify(runPlan, null, 2));
+		else {
+			out(`=== Standalone Factory Wave Plan (${runPlan.modelId}) ===`);
+			out(
+				`Safe VRAM Load: ctx=${runPlan.vramLoadPlan.selectedContextLength}, parallel=${runPlan.vramLoadPlan.selectedParallel} (${runPlan.vramLoadPlan.projectedPeakVramGb} GiB / ${runPlan.vramLoadPlan.availableVramGb} GiB available)`,
+			);
+			out(`Scheduled Waves: ${runPlan.waves.length}`);
+		}
+		return 0;
+	}
+
+	if (sub === "reverie") {
+		const action = args[1] && !args[1].startsWith("--") ? args[1] : "list";
+		const chainPath = resolve(ctx.cwd, parseFlagValue(args, "--file") ?? ".system2/reverie.chain.jsonl");
+		const blocks = readReverieChainFromFile(chainPath);
+		const check = verifyReverieChain(blocks);
+		const pitches = queryRoundtablePitches(blocks);
+		if (jsonMode) {
+			out(JSON.stringify({ chainPath, blockCount: blocks.length, verification: check, pitches }, null, 2));
+		} else {
+			out(`=== System 2 Nightly Reverie Chain (${blocks.length} blocks, valid=${check.valid}) ===`);
+			if (action === "list") {
+				for (const b of pitches) {
+					out(
+						`  #${b.blockHeight} [${b.payload.status}] (${b.origin.persona}): ${b.payload.title ?? b.payload.pitch}`,
+					);
+				}
+			}
+		}
+		return check.valid ? 0 : 1;
+	}
+
+	if (sub === "arena") {
+		const modelId = args[1] && !args[1].startsWith("--") ? args[1] : "thinkingmachines/inkling-2-mini";
+		const vramFlag = parseFlagValue(args, "--vram");
+		const maxVram = vramFlag ? Number.parseFloat(vramFlag) : undefined;
+		const res = runQuickCliModelArena(modelId, maxVram);
+		if (jsonMode) out(JSON.stringify(res, null, 2));
+		else {
+			out(`=== Challenger Model Arena: ${modelId} ===`);
+			out(`Safe Load Plan: ${res.loadPlan.lmsLoadArgs.join(" ")} (${res.loadPlan.projectedPeakVramGb} GiB)`);
+			out(res.report.scorecardMarkdown);
+		}
+		return 0;
+	}
+
+	if (sub === "audit-secrets") {
+		const positional = args.slice(1).filter((a) => !a.startsWith("--"));
+		const files = collectFactoryTargetFiles(ctx.cwd, positional);
+		const filePayloads: { path: string; content: string; isTest?: boolean }[] = [];
+		for (const relPath of files) {
+			try {
+				filePayloads.push({
+					path: relPath,
+					content: readFileSync(resolve(ctx.cwd, relPath), "utf8"),
+					isTest: isTestFilePath(relPath),
+				});
+			} catch {
+				// Skip unreadable files.
+			}
+		}
+		const gitignorePath = resolve(ctx.cwd, ".gitignore");
+		const gitignoreContent = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : undefined;
+		const report = auditRepoSecretsAndPii({ files: filePayloads, gitignoreContent });
+		if (jsonMode) out(JSON.stringify(report, null, 2));
+		else {
+			out(
+				`=== Security & PII Audit (${report.filesScanned} files): ${report.clean ? "CLEAN" : `${report.findings.length} FINDING(S)`} ===`,
+			);
+			for (const f of report.findings)
+				out(`  [${f.severity.toUpperCase()}] ${f.path}:${f.line} (${f.rule}) -> ${f.snippet}`);
+		}
+		return report.clean ? 0 : 1;
 	}
 
 	err(`Unknown 'system2 factory' subcommand: "${sub}". Run 'system2 factory --help' for usage.`);
